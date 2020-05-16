@@ -3,9 +3,11 @@
 #include "..\DBInt\db-interface.h"
 
 
+
 #define SQLSERVER_INTERFACE_API __declspec(dllexport)
 
 /* DDL's PRIVATE FUNCTIONS  */
+void											HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
 
 /* DDL's PUBLIC FUNCTIONS  */
 SQLSERVER_INTERFACE_API void					sqlserverInitConnection(DBInt_Connection* conn);

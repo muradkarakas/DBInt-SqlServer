@@ -4,9 +4,66 @@
 
 #include "sqlserver-interface.h"
 
-#include <windows.h>
-
 SQLHENV     hEnv = NULL;
+
+/*******************************************/
+/* Macro to call ODBC functions and        */
+/* report an error on failure.             */
+/* Takes handle, handle type, and stmt     */
+/*******************************************/
+
+#define TRYODBC(h, ht, x)   {   RETCODE rc = x;\
+                                if (rc != SQL_SUCCESS) \
+                                { \
+                                    HandleDiagnosticRecord (h, ht, rc); \
+                                } \
+                                if (rc == SQL_ERROR) \
+                                { \
+                                    conn->err = TRUE; \
+                                    conn->errText = "error occured"; \
+                                    goto Exit;  \
+                                }  \
+                            }
+
+/******************************************/
+/* Structure to store information about   */
+/* a column.
+/******************************************/
+
+typedef struct STR_BINDING {
+	SQLSMALLINT         cDisplaySize;           /* size to display  */
+	WCHAR* wszBuffer;             /* display buffer   */
+	SQLLEN              indPtr;                 /* size or null     */
+	BOOL                fChar;                  /* character col?   */
+	struct STR_BINDING* sNext;                 /* linked list      */
+} BINDING;
+
+/******************************************/
+/* Forward references                     */
+/******************************************/
+
+void HandleDiagnosticRecord(SQLHANDLE      hHandle,
+	SQLSMALLINT    hType,
+	RETCODE        RetCode);
+
+void DisplayResults(HSTMT       hStmt,
+	SQLSMALLINT cCols);
+
+void AllocateBindings(HSTMT         hStmt,
+	SQLSMALLINT   cCols,
+	BINDING** ppBinding,
+	SQLSMALLINT* pDisplay);
+
+
+void DisplayTitles(HSTMT    hStmt,
+	DWORD    cDisplaySize,
+	BINDING* pBinding);
+
+void SetConsole(DWORD   cDisplaySize,
+	BOOL    fInvert);
+
+
+
 
 SQLSERVER_INTERFACE_API 
 void 
@@ -17,6 +74,125 @@ sqlserverInitConnection(
 	conn->err = FALSE;
 	conn->errText = NULL;
 }
+
+
+SQLSERVER_INTERFACE_API 
+void 
+sqlserverPrepare(
+	DBInt_Connection * conn, 
+	DBInt_Statement * stm, 
+	const char * sql
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+}
+
+SQLSERVER_INTERFACE_API
+void
+sqlserverExecuteSelectStatement(
+	DBInt_Connection * conn, 
+	DBInt_Statement * stm, 
+	const char * sql
+)
+{
+	RETCODE     RetCode;
+
+	conn->errText = NULL;
+	conn->err = FALSE;
+
+	// convertion char sql to wchar_t sql
+	size_t sourceCharCount = strlen(sql);
+	size_t memSize = (sizeof(wchar_t) * sourceCharCount) + sizeof(wchar_t);
+	SQLWCHAR * wSql = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
+	mbstowcs_s(NULL, wSql, memSize, sql, sourceCharCount);
+	
+	RetCode = SQLExecDirect(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS);
+
+	switch (RetCode)
+	{
+		case SQL_SUCCESS_WITH_INFO:
+		{
+			HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
+			// fall through
+		}
+		case SQL_SUCCESS:
+		{
+			// If this is a row-returning query, display
+			// results
+			TRYODBC(*stm->statement.sqlserver.hStmt,
+				SQL_HANDLE_STMT,
+				SQLNumResultCols(*stm->statement.sqlserver.hStmt, &stm->statement.sqlserver.sNumResults));
+
+			if (stm->statement.sqlserver.sNumResults > 0)
+			{
+				//DisplayResults(*stm->statement.sqlserver.hStmt, sNumResults);
+			}
+			else
+			{
+				// If sql is not select, getting the row count affected
+				TRYODBC(*stm->statement.sqlserver.hStmt,
+					SQL_HANDLE_STMT,
+					SQLRowCount(*stm->statement.sqlserver.hStmt, &stm->statement.sqlserver.cRowCount));
+			}
+			break;
+		}
+
+		case SQL_ERROR:
+		{
+			HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
+			break;
+		}
+
+		default:
+			fwprintf(stderr, L"Unexpected return code %hd!\n", RetCode);
+
+	}
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLFreeStmt(*stm->statement.sqlserver.hStmt, SQL_CLOSE));
+Exit:
+	// Free ODBC handles and exit
+
+	if (*stm->statement.sqlserver.hStmt)
+	{
+		SQLFreeHandle(SQL_HANDLE_STMT, *stm->statement.sqlserver.hStmt);
+	}
+
+	/*if (hDbc)
+	{
+		SQLDisconnect(hDbc);
+		SQLFreeHandle(SQL_HANDLE_DBC, hDbc);
+	}
+
+	if (hEnv)
+	{
+		SQLFreeHandle(SQL_HANDLE_ENV, hEnv);
+	}*/
+}
+
+SQLSERVER_INTERFACE_API
+DBInt_Statement*
+sqlserverCreateStatement(
+	DBInt_Connection * conn
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+
+	DBInt_Statement* retObj = (DBInt_Statement*)mkMalloc(conn->heapHandle, sizeof(DBInt_Statement), __FILE__, __LINE__);
+	
+	retObj->statement.sqlserver.hStmt = mkMalloc(conn->heapHandle, sizeof(SQLHSTMT), __FILE__, __LINE__);
+
+	TRYODBC(*conn->connection.sqlserverHandle,
+		SQL_HANDLE_DBC,
+		SQLAllocHandle(SQL_HANDLE_STMT, *conn->connection.sqlserverHandle, retObj->statement.sqlserver.hStmt));
+
+Exit:
+
+	return retObj;
+}
+
 
 
 SQLSERVER_INTERFACE_API
@@ -31,13 +207,67 @@ sqlserverCreateConnection(
 )
 {
 	DBInt_Connection* conn = (DBInt_Connection*)mkMalloc(heapHandle, sizeof(DBInt_Connection), __FILE__, __LINE__);
-	conn->dbType = SODIUM_POSTGRESQL_SUPPORT;
-	conn->errText = NULL;
+	conn->dbType = SODIUM_SQLSERVER_SUPPORT;
 	conn->heapHandle = heapHandle;
+	conn->errText = NULL;
 	conn->err = FALSE;
-
+	
+	// converting char input parameters to wchar_t
+	wchar_t wHostName[MAX_PATH] = L"";
 	strcpy_s(conn->hostName, HOST_NAME_LENGTH, hostName);
+	mbstowcs_s(NULL, wHostName, MAX_PATH, conn->hostName, strnlen_s(conn->hostName, MAX_PATH));
+	
+	wchar_t wDbName[MAX_PATH] = L"";
+	mbstowcs_s(NULL, wDbName, MAX_PATH, dbName, strnlen_s(dbName, MAX_PATH));
+	
+	wchar_t wUserName[MAX_PATH] = L"";
+	mbstowcs_s(NULL, wUserName, MAX_PATH, userName, strnlen_s(userName, MAX_PATH));
+	
+	wchar_t wPassword[MAX_PATH] = L"";
+	mbstowcs_s(NULL, wPassword, MAX_PATH, password, strnlen_s(password, MAX_PATH));
 
+	conn->connection_string = mkStrcatW(heapHandle, __FILE__, __LINE__,
+		L"Driver={SQL Server}; Server=", wHostName, L"\\", wDbName, L";User Id=", wUserName, L";Password=", wPassword, L";",
+		NULL);
+	
+	// Allocate an environment
+	if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &hEnv) == SQL_ERROR)
+	{
+		conn->errText = "Unable to allocate an environment handle";
+		conn->err = TRUE;
+	}
+	else {
+		TRYODBC(hEnv,
+			SQL_HANDLE_ENV,
+			SQLSetEnvAttr(hEnv,
+				SQL_ATTR_ODBC_VERSION,
+				(SQLPOINTER)SQL_OV_ODBC3,
+				0));
+
+		// TODO: release 'conn->connection.sqlserverHandle' on disconnect
+		conn->connection.sqlserverHandle = mkMalloc(heapHandle, sizeof(SQLHANDLE), __FILE__, __LINE__);
+
+		// Allocate a connection
+		TRYODBC(hEnv,
+			SQL_HANDLE_ENV,
+			SQLAllocHandle(SQL_HANDLE_DBC, hEnv, conn->connection.sqlserverHandle));
+
+		// Connect to the driver.  Use the connection string if supplied
+		// on the input, otherwise let the driver manager prompt for input.
+
+		TRYODBC(*conn->connection.sqlserverHandle,
+			SQL_HANDLE_DBC,
+			SQLDriverConnect(*conn->connection.sqlserverHandle,
+				GetDesktopWindow(),
+				conn->connection_string,
+				SQL_NTS,
+				NULL,
+				0,
+				NULL,
+				SQL_DRIVER_COMPLETE | SQL_DRIVER_NOPROMPT));
+	}
+
+Exit:
 	/*if (IsPostgreSqLClientDriverLoaded == TRUE)
 	{
 		char* conninfo = mkStrcat(heapHandle, __FILE__, __LINE__, "host=", conn->hostName, " dbname=", dbName, " user=", userName, " password=", password, NULL);
@@ -63,6 +293,50 @@ sqlserverCreateConnection(
 
 	return conn;
 }
+
+/************************************************************************
+/* HandleDiagnosticRecord : display error/warning information
+/*
+/* Parameters:
+/*      hHandle     ODBC handle
+/*      hType       Type of handle (HANDLE_STMT, HANDLE_ENV, HANDLE_DBC)
+/*      RetCode     Return code of failing command
+/************************************************************************/
+
+void HandleDiagnosticRecord(SQLHANDLE      hHandle,
+	SQLSMALLINT    hType,
+	RETCODE        RetCode)
+{
+	SQLSMALLINT iRec = 0;
+	SQLINTEGER  iError;
+	WCHAR       wszMessage[1000];
+	WCHAR       wszState[SQL_SQLSTATE_SIZE + 1];
+
+
+	if (RetCode == SQL_INVALID_HANDLE)
+	{
+		fwprintf(stderr, L"Invalid handle!\n");
+		return;
+	}
+
+	while (SQLGetDiagRec(hType,
+		hHandle,
+		++iRec,
+		wszState,
+		&iError,
+		wszMessage,
+		(SQLSMALLINT)(sizeof(wszMessage) / sizeof(WCHAR)),
+		(SQLSMALLINT*)NULL) == SQL_SUCCESS)
+	{
+		// Hide data truncated..
+		if (wcsncmp(wszState, L"01004", 5))
+		{
+			fwprintf(stderr, L"[%5.5s] %s (%d)\n", wszState, wszMessage, iError);
+		}
+	}
+
+}
+
 /*
 
 SQLSERVER_INTERFACE_API
@@ -389,17 +663,6 @@ SQLSERVER_INTERFACE_API void sqlserverBindString(DBInt_Connection* conn, DBInt_S
 	POSTCHECK(conn);
 }
 
-SQLSERVER_INTERFACE_API DBInt_Statement* sqlserverCreateStatement(DBInt_Connection* conn) {
-	PRECHECK(conn);
-
-	DBInt_Statement* retObj = (DBInt_Statement*)mkMalloc(conn->heapHandle, sizeof(DBInt_Statement), __FILE__, __LINE__);
-	retObj->statement.postgresql.resultSet = NULL;
-	retObj->statement.postgresql.currentRowNum = 0;
-	retObj->statement.postgresql.bindVariableCount = 0;
-	retObj->statement.postgresql.bindVariables = NULL;
-	return retObj;
-}
-
 SQLSERVER_INTERFACE_API const char* sqlserverGetColumnNameByIndex(DBInt_Connection* conn, DBInt_Statement* stm, unsigned int index) {
 	PRECHECK(conn);
 
@@ -480,36 +743,11 @@ sqlserverGetColumnType(
 	return retVal;
 }
 
-SQLSERVER_INTERFACE_API void sqlserverPrepare(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
-	PRECHECK(conn);
-
-	conn->errText = NULL;
-}
-
-
 SQLSERVER_INTERFACE_API void sqlserverExecuteDescribe(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
 	PRECHECK(conn);
 
 	conn->errText = NULL;
 	PGresult* res = PQdescribePrepared(conn->connection.postgresqlHandle, sql);
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-		PQclear(res);
-	}
-	else {
-		stm->statement.postgresql.currentRowNum = 0;
-		stm->statement.postgresql.resultSet = res;
-	}
-	POSTCHECK(conn);
-}
-
-
-SQLSERVER_INTERFACE_API void sqlserverExecuteSelectStatement(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
-	PRECHECK(conn);
-
-	conn->errText = NULL;
-	PGresult* res = PQexec(conn->connection.postgresqlHandle, sql);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
 		conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
