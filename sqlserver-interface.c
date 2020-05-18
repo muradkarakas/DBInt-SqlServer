@@ -219,9 +219,9 @@ sqlserverGetColumnValueByColumnName(
 					bind->chRowData,
 					(bind->rowDataCharacterCount) * sizeof(char),
 					bind->wRowData,
-					bind->rowDataCharacterCount);
+					wcslen(bind->wRowData));
 
-				retval = "bind->chRowData";
+				retval = bind->chRowData;
 
 				break;
 			}
@@ -360,12 +360,10 @@ BindAllResultSetColumns(
 		// Allocate a buffer big enough to hold columnd data in wchar_t format
 		size_t wMemSize = ((pThisBinding->rowDataCharacterCount + 1) * sizeof(WCHAR));
 		pThisBinding->wRowData = mkMalloc(conn->heapHandle, wMemSize, __FILE__, __LINE__);
-		pThisBinding->wRowData[0] = L'\0';
 
 		// Allocate a buffer big enough to hold columnd data in char format
 		size_t cMemSize = ((pThisBinding->rowDataCharacterCount + 1) * sizeof(char));
 		pThisBinding->chRowData = mkMalloc(conn->heapHandle, cMemSize, __FILE__, __LINE__);
-		pThisBinding->chRowData[0] = '\0';
 
 		if (!(pThisBinding->wRowData))
 		{
@@ -391,6 +389,7 @@ BindAllResultSetColumns(
 		wchar_t wColumnName[200] = L"";
 		SQLSMALLINT cchColumnNameLength;
 		SQLLEN		numericAttributePtr;
+
 		// Now set the display size that we will use to display
 		// the data.   Figure out the length of the column name
 		TRYODBC(*stm->statement.sqlserver.hStmt,
@@ -403,8 +402,9 @@ BindAllResultSetColumns(
 				&cchColumnNameLength,
 				&numericAttributePtr));
 
-		pThisBinding->columnName = mkMalloc(conn->heapHandle, cchColumnNameLength + sizeof(wchar_t), __FILE__, __LINE__);
-		wcstombs_s(NULL, pThisBinding->columnName, cchColumnNameLength, wColumnName, 500);
+		size_t memSize = (cchColumnNameLength/sizeof(wchar_t)) + sizeof(char);
+		pThisBinding->columnName = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
+		wcstombs_s(NULL, pThisBinding->columnName, memSize, wColumnName, memSize-1);
 	}
 
 Exit:
@@ -429,7 +429,7 @@ sqlserverExecuteSelectStatement(
 	size_t sourceCharCount = strlen(sql);
 	size_t memSize = (sizeof(wchar_t) * sourceCharCount) + sizeof(wchar_t);
 	SQLWCHAR * wSql = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
-	mbstowcs_s(NULL, wSql, memSize, sql, sourceCharCount);
+	mbstowcs_s(NULL, wSql, sourceCharCount+1, sql, sourceCharCount);
 	
 	RetCode = SQLExecDirect(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS);
 
