@@ -7,12 +7,24 @@
 #define SQLSERVER_INTERFACE_API __declspec(dllexport)
 
 /* DDL's PRIVATE FUNCTIONS  */
-void											HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
-void											BindAllResultSetColumns(DBInt_Connection* conn, DBInt_Statement* stm);
+void							HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
+void							BindAllResultSetColumns(DBInt_Connection* conn, DBInt_Statement* stm);
+SQLRETURN						_bind(DBInt_Connection* conn, DBInt_Statement* stm, char* bindVariableName, char* bindVariableValue, size_t valueLength);
 
 /* DDL's PUBLIC FUNCTIONS  */
 SQLSERVER_INTERFACE_API void					sqlserverInitConnection(DBInt_Connection* conn);
-SQLSERVER_INTERFACE_API DBInt_Connection	  * sqlserverCreateConnection(HANDLE heapHandle, DBInt_SupportedDatabaseType dbType, const char* hostName, const char* dbName, const char* userName, const char* password);
+
+SQLSERVER_INTERFACE_API 
+DBInt_Connection * 
+sqlserverCreateConnection(
+	HANDLE heapHandle,
+	DBInt_SupportedDatabaseType dbType,
+	const char* hostName,
+	const char* instanceName,
+	const char* databaseName,
+	const char* userName,
+	const char* password);
+
 SQLSERVER_INTERFACE_API void					sqlserverDestroyConnection(DBInt_Connection* mkConnection);
 SQLSERVER_INTERFACE_API int						sqlserverIsConnectionOpen(DBInt_Connection* mkConnection);
 SQLSERVER_INTERFACE_API int						sqlserverIsEof(DBInt_Connection* mkConnection, DBInt_Statement* stm);

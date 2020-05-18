@@ -50,13 +50,117 @@ void AllocateBindings(
 	BINDING** ppBinding);
 
 
-void DisplayTitles(HSTMT    hStmt,
-	DWORD    cDisplaySize,
-	BINDING* pBinding);
+SQLRETURN
+_bind(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	char* bindVariableName,
+	char* bindVariableValue,
+	size_t valueLength
+)
+{
+	SQLUSMALLINT	colIndex = 1;
+	SQLRETURN		retCode;
+	SQLLEN			strlenOrIndPtr = SQL_NTS;
 
-void SetConsole(DWORD   cDisplaySize,
-	BOOL    fInvert);
+	retCode = SQLBindParameter(
+		*stm->statement.sqlserver.hStmt, //	StatementHandle
+		colIndex,				//	ParameterNumber
+		SQL_PARAM_INPUT,		//	InputOutputType
+		SQL_C_CHAR,				//	ValueType
+		SQL_CHAR,				//	ParameterType
+		valueLength,			//	ColumnSize
+		0,						//	DecimalDigits
+		bindVariableValue,		//	ParameterValuePtr
+		valueLength,			//	BufferLength
+		&strlenOrIndPtr			//	StrLen_or_IndPtr
+	);
 
+	return retCode;
+}
+
+SQLSERVER_INTERFACE_API 
+void 
+sqlserverBindString(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm, 
+	char * bindVariableName, 
+	char * bindVariableValue, 
+	size_t valueLength
+)
+{
+	_bind(conn, stm, bindVariableName, bindVariableValue, valueLength);
+}
+
+
+
+SQLSERVER_INTERFACE_API 
+void
+sqlserverBindNumber(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm, 
+	char * bindVariableName, 
+	char * bindVariableValue,
+	size_t valueLength
+)
+{
+
+}
+
+SQLSERVER_INTERFACE_API 
+void 
+sqlserverExecuteAnonymousBlock(
+	DBInt_Connection * conn, 
+	DBInt_Statement * stm, 
+	const char* sql
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+
+	sqlserverExecuteSelectStatement(conn, stm, sql);
+}
+
+SQLSERVER_INTERFACE_API
+void
+sqlserverFreeStatement(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm
+)
+{
+	if (stm == NULL || conn == NULL) {
+		return;
+	}
+	for (SQLSMALLINT iCol = 1; iCol <= stm->statement.sqlserver.cColCount; iCol++)
+	{
+		if (stm->statement.sqlserver.resultSet) {
+			BINDING* pThisBinding = &stm->statement.sqlserver.resultSet[iCol - 1];
+			if (pThisBinding->wRowData) {
+				mkFree(conn->heapHandle, pThisBinding->wRowData);
+				pThisBinding->wRowData = NULL;
+			}		
+			if (pThisBinding->chRowData) {
+				mkFree(conn->heapHandle, pThisBinding->chRowData);
+				pThisBinding->chRowData = NULL;
+			}		
+			if (pThisBinding->columnName) {
+				mkFree(conn->heapHandle, pThisBinding->columnName);
+				pThisBinding->columnName = NULL;
+			}
+			mkFree(conn->heapHandle, stm->statement.sqlserver.resultSet);
+			stm->statement.sqlserver.resultSet = NULL;
+		}
+	}
+
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLFreeStmt(*stm->statement.sqlserver.hStmt, SQL_CLOSE));
+
+	SQLFreeHandle(SQL_HANDLE_STMT, *stm->statement.sqlserver.hStmt);
+Exit:
+
+	mkFree(conn->heapHandle, stm);
+}
 
 SQLSERVER_INTERFACE_API 
 const char * 
@@ -485,11 +589,6 @@ sqlserverExecuteSelectStatement(
 Exit:
 	// Free ODBC handles and exit
 
-	if (*stm->statement.sqlserver.hStmt)
-	{
-		//SQLFreeHandle(SQL_HANDLE_STMT, *stm->statement.sqlserver.hStmt);
-	}
-
 	/*if (hDbc)
 	{
 		SQLDisconnect(hDbc);
@@ -500,6 +599,7 @@ Exit:
 	{
 		SQLFreeHandle(SQL_HANDLE_ENV, hEnv);
 	}*/
+	return;
 }
 
 SQLSERVER_INTERFACE_API
@@ -536,10 +636,11 @@ DBInt_Connection*
 sqlserverCreateConnection(
 	HANDLE heapHandle,
 	DBInt_SupportedDatabaseType dbType,
-	const char* hostName,
-	const char* dbName,
-	const char* userName,
-	const char* password
+	const char * hostName,
+	const char * instanceName,
+	const char * databaseName,
+	const char * userName,
+	const char * password
 )
 {
 	DBInt_Connection* conn = (DBInt_Connection*)mkMalloc(heapHandle, sizeof(DBInt_Connection), __FILE__, __LINE__);
@@ -553,8 +654,11 @@ sqlserverCreateConnection(
 	strcpy_s(conn->hostName, HOST_NAME_LENGTH, hostName);
 	mbstowcs_s(NULL, wHostName, MAX_PATH, conn->hostName, strnlen_s(conn->hostName, MAX_PATH));
 	
-	wchar_t wDbName[MAX_PATH] = L"";
-	mbstowcs_s(NULL, wDbName, MAX_PATH, dbName, strnlen_s(dbName, MAX_PATH));
+	wchar_t wInstanceName[MAX_PATH] = L"";
+	mbstowcs_s(NULL, wInstanceName, MAX_PATH, instanceName, strnlen_s(instanceName, MAX_PATH));
+	
+	wchar_t wDatabaseName[MAX_PATH] = L"";
+	mbstowcs_s(NULL, wDatabaseName, MAX_PATH, databaseName, strnlen_s(databaseName, MAX_PATH));
 	
 	wchar_t wUserName[MAX_PATH] = L"";
 	mbstowcs_s(NULL, wUserName, MAX_PATH, userName, strnlen_s(userName, MAX_PATH));
@@ -563,7 +667,7 @@ sqlserverCreateConnection(
 	mbstowcs_s(NULL, wPassword, MAX_PATH, password, strnlen_s(password, MAX_PATH));
 
 	conn->connection_string = mkStrcatW(heapHandle, __FILE__, __LINE__,
-		L"Driver={SQL Server}; Server=", wHostName, L"\\", wDbName, L";User Id=", wUserName, L";Password=", wPassword, L";",
+		L"Driver={SQL Server}; Server=", wHostName, L"\\", wInstanceName, L";Database=", wDatabaseName, L";User Id=", wUserName, L";Password=", wPassword, L";",
 		NULL);
 	
 	// Allocate an environment
@@ -604,29 +708,7 @@ sqlserverCreateConnection(
 	}
 
 Exit:
-	/*if (IsPostgreSqLClientDriverLoaded == TRUE)
-	{
-		char* conninfo = mkStrcat(heapHandle, __FILE__, __LINE__, "host=", conn->hostName, " dbname=", dbName, " user=", userName, " password=", password, NULL);
-		PGconn* pgConn = PQconnectdb(conninfo);
-		// Check to see that the backend connection was successfully made 
-		if (PQstatus(pgConn) != CONNECTION_OK) {
-			conn->err = TRUE;
-			conn->errText = PQerrorMessage(pgConn);
-		}
-		else {
-			conn->connection.postgresqlHandle = pgConn;
-			// starting a new transaction
-			beginNewTransaction(conn);
-		}
-
-		mkFree(heapHandle, conninfo);
-	}
-	else
-	{
-		conn->err = TRUE;
-		conn->errText = "PostgreSql client driver not loaded";
-	}*/
-
+	
 	return conn;
 }
 
@@ -778,41 +860,7 @@ SQLSERVER_INTERFACE_API BOOL sqlserverCommit(DBInt_Connection* conn) {
 	return (conn->errText != NULL);
 }
 
-SQLSERVER_INTERFACE_API void	sqlserverFreeStatement(DBInt_Connection* conn, DBInt_Statement* stm) {
-	PRECHECK(conn);
 
-	if (stm == NULL || conn == NULL) {
-		return;
-	}
-
-	if (stm->statement.postgresql.bindVariableCount > 0) {
-		for (int paramIndex = 0; paramIndex < stm->statement.postgresql.bindVariableCount; paramIndex++) {
-			if (stm->statement.postgresql.bindVariables[paramIndex]) {
-				mkFree(conn->heapHandle, stm->statement.postgresql.bindVariables[paramIndex]);
-				stm->statement.postgresql.bindVariables[paramIndex] = NULL;
-			}
-		}
-		// Time to free all arrays
-		mkFree(conn->heapHandle, stm->statement.postgresql.bindVariables);
-		stm->statement.postgresql.bindVariables = NULL;
-
-		mkFree(conn->heapHandle, stm->statement.postgresql.paramTypes);
-		stm->statement.postgresql.paramTypes = NULL;
-
-		mkFree(conn->heapHandle, stm->statement.postgresql.paramFormats);
-		stm->statement.postgresql.paramFormats = NULL;
-
-		mkFree(conn->heapHandle, stm->statement.postgresql.paramSizes);
-		stm->statement.postgresql.paramSizes = NULL;
-
-		stm->statement.postgresql.bindVariableCount = 0;
-	}
-	if (stm->statement.postgresql.resultSet) {
-		PQclear(stm->statement.postgresql.resultSet);
-		stm->statement.postgresql.resultSet = NULL;
-	}
-	mkFree(conn->heapHandle, stm);
-}
 
 SQLSERVER_INTERFACE_API void sqlserverDestroyConnection(DBInt_Connection* conn) {
 	PRECHECK(conn);
@@ -983,21 +1031,7 @@ SQLSERVER_INTERFACE_API void sqlserverExecuteUpdateStatement(DBInt_Connection* c
 	POSTCHECK(conn);
 }
 
-SQLSERVER_INTERFACE_API void sqlserverBindString(DBInt_Connection* conn, DBInt_Statement* stm, char* bindVariableName, char* bindVariableValue, size_t valueLength) {
-	PRECHECK(conn);
 
-	if (bindVariableName && bindVariableValue) {
-		sqlserverAddNewParamEntry(conn,
-			stm,
-			bindVariableName,
-			0 // 0 means auto detection,
-			0 // variable format
-			bindVariableValue,
-			valueLength);
-	}
-
-	POSTCHECK(conn);
-}
 
 
 
@@ -1092,19 +1126,7 @@ SQLSERVER_INTERFACE_API void sqlserverExecuteDeleteStatement(DBInt_Connection* c
 	POSTCHECK(conn);
 }
 
-SQLSERVER_INTERFACE_API void sqlserverExecuteAnonymousBlock(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
-	PRECHECK(conn);
 
-	conn->errText = NULL;
-	PGresult* res = PQexec(conn->connection.postgresqlHandle, sql);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-		conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-	}
-	PQclear(res);
-	stm->statement.postgresql.resultSet = NULL;
-	stm->statement.postgresql.currentRowNum = 0;
-	POSTCHECK(conn);
-}
 
 SQLSERVER_INTERFACE_API unsigned int sqlserverGetAffectedRows(DBInt_Connection* conn, DBInt_Statement* stm) {
 	PRECHECK(conn);
