@@ -8,16 +8,17 @@
 
 /* DDL's PRIVATE FUNCTIONS  */
 void											HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
+void											BindAllResultSetColumns(DBInt_Connection* conn, DBInt_Statement* stm);
 
 /* DDL's PUBLIC FUNCTIONS  */
 SQLSERVER_INTERFACE_API void					sqlserverInitConnection(DBInt_Connection* conn);
 SQLSERVER_INTERFACE_API DBInt_Connection	  * sqlserverCreateConnection(HANDLE heapHandle, DBInt_SupportedDatabaseType dbType, const char* hostName, const char* dbName, const char* userName, const char* password);
 SQLSERVER_INTERFACE_API void					sqlserverDestroyConnection(DBInt_Connection* mkConnection);
 SQLSERVER_INTERFACE_API int						sqlserverIsConnectionOpen(DBInt_Connection* mkConnection);
-SQLSERVER_INTERFACE_API int						sqlserverIsEof(DBInt_Statement* stm);
+SQLSERVER_INTERFACE_API int						sqlserverIsEof(DBInt_Connection* mkConnection, DBInt_Statement* stm);
 SQLSERVER_INTERFACE_API void					sqlserverFirst(DBInt_Connection* mkConnection, DBInt_Statement* stm);
 SQLSERVER_INTERFACE_API void					sqlserverLast(DBInt_Connection* mkConnection, DBInt_Statement* stm);
-SQLSERVER_INTERFACE_API BOOL					sqlserverNext(DBInt_Statement* stm);
+SQLSERVER_INTERFACE_API BOOL					sqlserverNext(DBInt_Connection* conn, DBInt_Statement* stm);
 SQLSERVER_INTERFACE_API BOOL					sqlserverPrev(DBInt_Statement* stm);
 SQLSERVER_INTERFACE_API DBInt_Statement		  * sqlserverCreateStatement(DBInt_Connection* mkConnection);
 SQLSERVER_INTERFACE_API void					sqlserverFreeStatement(DBInt_Connection* mkConnection, DBInt_Statement* stm);

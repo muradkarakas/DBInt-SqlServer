@@ -30,13 +30,7 @@ SQLHENV     hEnv = NULL;
 /* a column.
 /******************************************/
 
-typedef struct STR_BINDING {
-	SQLSMALLINT         cDisplaySize;           /* size to display  */
-	WCHAR* wszBuffer;             /* display buffer   */
-	SQLLEN              indPtr;                 /* size or null     */
-	BOOL                fChar;                  /* character col?   */
-	struct STR_BINDING* sNext;                 /* linked list      */
-} BINDING;
+
 
 /******************************************/
 /* Forward references                     */
@@ -49,10 +43,11 @@ void HandleDiagnosticRecord(SQLHANDLE      hHandle,
 void DisplayResults(HSTMT       hStmt,
 	SQLSMALLINT cCols);
 
-void AllocateBindings(HSTMT         hStmt,
-	SQLSMALLINT   cCols,
-	BINDING** ppBinding,
-	SQLSMALLINT* pDisplay);
+void AllocateBindings(
+	DBInt_Connection* conn,
+	HSTMT				hStmt,
+	SQLSMALLINT			cCols,
+	BINDING** ppBinding);
 
 
 void DisplayTitles(HSTMT    hStmt,
@@ -63,7 +58,178 @@ void SetConsole(DWORD   cDisplaySize,
 	BOOL    fInvert);
 
 
+SQLSERVER_INTERFACE_API 
+const char * 
+sqlserverGetColumnNameByIndex(
+	DBInt_Connection * conn, 
+	DBInt_Statement * stm, 
+	unsigned int index
+) 
+{
+	char* columnName = NULL;
+	if (stm->statement.sqlserver.cColCount > 0) {
+		if (stm->statement.sqlserver.resultSet) {
+			if (index <= stm->statement.sqlserver.cColCount) {
+				BINDING* bind = &stm->statement.sqlserver.resultSet[index - 1];
+				if (bind->columnName)
+					columnName = bind->columnName;
+			}
+		}
+	}
+	return columnName;
+}
 
+/*void AllocateBindings(
+	DBInt_Connection	* conn,
+	HSTMT				hStmt,
+	SQLSMALLINT			cCols,
+	BINDING				** ppBinding)
+{
+	SQLSMALLINT     iCol;
+	BINDING* pThisBinding;
+	SQLLEN          cchDisplay, ssType;
+	SQLSMALLINT     cchColumnNameLength;
+
+	for (iCol = 0; iCol < cCols; iCol++)
+	{
+		pThisBinding = (BINDING*)(malloc(sizeof(BINDING)));
+		if (!(pThisBinding))
+		{
+			fwprintf(stderr, L"Out of memory!\n");
+			exit(-100);
+		}
+
+		*ppBinding = pThisBinding;
+
+		// Figure out the display length of the column (we will
+		// bind to char since we are only displaying data, in general
+		// you should bind to the appropriate C type if you are going
+		// to manipulate data since it is much faster...)
+
+		TRYODBC(hStmt,
+			SQL_HANDLE_STMT,
+			SQLColAttribute(hStmt,
+				iCol,
+				SQL_DESC_DISPLAY_SIZE,
+				NULL,
+				0,
+				NULL,
+				&cchDisplay));
+
+
+		// Figure out if this is a character or numeric column; this is
+		// used to determine if we want to display the data left- or right-
+		// aligned.
+
+		// SQL_DESC_CONCISE_TYPE maps to the 1.x SQL_COLUMN_TYPE. 
+		// This is what you must use if you want to work
+		// against a 2.x driver.
+
+		TRYODBC(hStmt,
+			SQL_HANDLE_STMT,
+			SQLColAttribute(hStmt,
+				iCol,
+				SQL_DESC_CONCISE_TYPE,
+				NULL,
+				0,
+				NULL,
+				&ssType));
+
+
+		pThisBinding->fChar = (ssType == SQL_CHAR ||
+			ssType == SQL_VARCHAR ||
+			ssType == SQL_LONGVARCHAR);
+
+		// Allocate a buffer big enough to hold the text representation
+		// of the data.  Add one character for the null terminator
+
+		pThisBinding->wRowData = (WCHAR*)malloc((cchDisplay + 1) * sizeof(WCHAR));
+
+		if (!(pThisBinding->wszBuffer))
+		{
+			fwprintf(stderr, L"Out of memory!\n");
+			exit(-100);
+		}
+
+		// Map this buffer to the driver's buffer.   At Fetch time,
+		// the driver will fill in this data.  Note that the size is 
+		// count of bytes (for Unicode).  All ODBC functions that take
+		// SQLPOINTER use count of bytes; all functions that take only
+		// strings use count of characters.
+
+		TRYODBC(hStmt,
+			SQL_HANDLE_STMT,
+			SQLBindCol(hStmt,
+				iCol,
+				SQL_C_TCHAR,
+				(SQLPOINTER)pThisBinding->wszBuffer,
+				(cchDisplay + 1) * sizeof(WCHAR),
+				&pThisBinding->indPtr));
+
+
+		// Now set the display size that we will use to display
+		// the data.   Figure out the length of the column name
+		wchar_t aa[500];
+
+		TRYODBC(hStmt,
+			SQL_HANDLE_STMT,
+			SQLColAttribute(hStmt,
+				iCol,
+				SQL_DESC_NAME,
+				aa,
+				500,
+				&cchColumnNameLength,
+				NULL));
+
+		pThisBinding->cDisplaySize = max((SQLSMALLINT)cchDisplay, cchColumnNameLength);
+	}
+
+	return;
+
+Exit:
+
+	exit(-1);
+
+	return;
+}*/
+
+SQLSERVER_INTERFACE_API 
+const char * 
+sqlserverGetColumnValueByColumnName(
+	DBInt_Connection * conn, 
+	DBInt_Statement * stm, 
+	const char* columnName
+)
+{
+	const char* retval = "";
+	const char* colName = NULL;
+
+	RETCODE         RetCode = SQL_SUCCESS;
+	int             iCount = 0;
+
+	// Allocate memory for each column 
+
+	for (int i = 1; i <= stm->statement.sqlserver.cColCount; i++) {
+		colName = sqlserverGetColumnNameByIndex(conn, stm, i);
+		if (colName) {
+			if (_stricmp(colName, columnName) == 0) {
+				BINDING* bind = &stm->statement.sqlserver.resultSet[i - 1];
+				wcstombs_s(
+					NULL,
+					bind->chRowData,
+					(bind->rowDataCharacterCount) * sizeof(char),
+					bind->wRowData,
+					bind->rowDataCharacterCount);
+
+				retval = "bind->chRowData";
+
+				break;
+			}
+		}
+	}
+
+	return retval;
+}
 
 SQLSERVER_INTERFACE_API 
 void 
@@ -76,6 +242,27 @@ sqlserverInitConnection(
 }
 
 
+
+SQLSERVER_INTERFACE_API 
+BOOL	
+sqlserverNext(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm
+)
+{
+	RETCODE     RetCode;
+
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT, 
+		RetCode = SQLFetch(*stm->statement.sqlserver.hStmt));
+
+	stm->statement.sqlserver.isEof = (RetCode == SQL_NO_DATA_FOUND);
+
+Exit:
+
+	return stm->statement.sqlserver.isEof;
+}
+
 SQLSERVER_INTERFACE_API 
 void 
 sqlserverPrepare(
@@ -87,6 +274,143 @@ sqlserverPrepare(
 	conn->errText = NULL;
 	conn->err = FALSE;
 }
+
+SQLSERVER_INTERFACE_API 
+BOOL	
+sqlserverIsEof(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm
+)
+{
+	return stm->statement.sqlserver.isEof;
+}
+
+SQLSERVER_INTERFACE_API 
+void 
+sqlserverSeek(
+	DBInt_Connection * conn, 
+	DBInt_Statement * stm, 
+	int rowNum
+)
+{
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLFetchScroll(*stm->statement.sqlserver.hStmt, SQL_FETCH_ABSOLUTE, rowNum));
+
+Exit:
+	return;
+}
+
+void 
+BindAllResultSetColumns(
+	DBInt_Connection * conn,
+	DBInt_Statement  * stm
+)
+{
+	SQLSMALLINT     iCol;
+	BINDING*		pThisBinding = NULL;
+	//SQLLEN          cchDisplay;
+	SQLLEN          ssType;
+
+	stm->statement.sqlserver.resultSet = mkMalloc(conn->heapHandle, stm->statement.sqlserver.cColCount * sizeof(BINDING), __FILE__, __LINE__);
+
+	for (iCol = 1; iCol <= stm->statement.sqlserver.cColCount; iCol++)
+	{
+		pThisBinding = &stm->statement.sqlserver.resultSet[iCol-1];
+
+
+		// Figure out the display length of the column (we will
+		// bind to char since we are only displaying data, in general
+		// you should bind to the appropriate C type if you are going
+		// to manipulate data since it is much faster...)
+
+		TRYODBC(*stm->statement.sqlserver.hStmt,
+			SQL_HANDLE_STMT,
+			SQLColAttribute(*stm->statement.sqlserver.hStmt,
+				iCol,
+				SQL_DESC_DISPLAY_SIZE,
+				NULL,
+				0,
+				NULL,
+				&pThisBinding->rowDataCharacterCount));
+
+		// Figure out if this is a character or numeric column; this is
+		// used to determine if we want to display the data left- or right-
+		// aligned.
+
+		// SQL_DESC_CONCISE_TYPE maps to the 1.x SQL_COLUMN_TYPE. 
+		// This is what you must use if you want to work
+		// against a 2.x driver.
+
+		TRYODBC(*stm->statement.sqlserver.hStmt,
+			SQL_HANDLE_STMT,
+			SQLColAttribute(*stm->statement.sqlserver.hStmt,
+				iCol,
+				SQL_DESC_CONCISE_TYPE,
+				NULL,
+				0,
+				NULL,
+				&ssType));
+
+
+		pThisBinding->fChar = (ssType == SQL_CHAR ||
+			ssType == SQL_VARCHAR ||
+			ssType == SQL_LONGVARCHAR);
+
+		// Allocate a buffer big enough to hold columnd data in wchar_t format
+		size_t wMemSize = ((pThisBinding->rowDataCharacterCount + 1) * sizeof(WCHAR));
+		pThisBinding->wRowData = mkMalloc(conn->heapHandle, wMemSize, __FILE__, __LINE__);
+		pThisBinding->wRowData[0] = L'\0';
+
+		// Allocate a buffer big enough to hold columnd data in char format
+		size_t cMemSize = ((pThisBinding->rowDataCharacterCount + 1) * sizeof(char));
+		pThisBinding->chRowData = mkMalloc(conn->heapHandle, cMemSize, __FILE__, __LINE__);
+		pThisBinding->chRowData[0] = '\0';
+
+		if (!(pThisBinding->wRowData))
+		{
+			fwprintf(stderr, L"Out of memory!\n");
+			exit(-100);
+		}
+
+		// Map this buffer to the driver's buffer.   At Fetch time,
+		// the driver will fill in this data.  Note that the size is 
+		// count of bytes (for Unicode).  All ODBC functions that take
+		// SQLPOINTER use count of bytes; all functions that take only
+		// strings use count of characters.
+
+		TRYODBC(*stm->statement.sqlserver.hStmt,
+			SQL_HANDLE_STMT,
+			SQLBindCol(*stm->statement.sqlserver.hStmt,
+				iCol,
+				SQL_C_WCHAR,
+				(SQLPOINTER)pThisBinding->wRowData,
+				wMemSize,
+				&pThisBinding->indPtr));
+
+		wchar_t wColumnName[200] = L"";
+		SQLSMALLINT cchColumnNameLength;
+		SQLLEN		numericAttributePtr;
+		// Now set the display size that we will use to display
+		// the data.   Figure out the length of the column name
+		TRYODBC(*stm->statement.sqlserver.hStmt,
+			SQL_HANDLE_STMT,
+			SQLColAttribute(*stm->statement.sqlserver.hStmt,
+				iCol,
+				SQL_DESC_NAME,
+				wColumnName,
+				200,
+				&cchColumnNameLength,
+				&numericAttributePtr));
+
+		pThisBinding->columnName = mkMalloc(conn->heapHandle, cchColumnNameLength + sizeof(wchar_t), __FILE__, __LINE__);
+		wcstombs_s(NULL, pThisBinding->columnName, cchColumnNameLength, wColumnName, 500);
+	}
+
+Exit:
+	return;
+}
+
 
 SQLSERVER_INTERFACE_API
 void
@@ -122,11 +446,17 @@ sqlserverExecuteSelectStatement(
 			// results
 			TRYODBC(*stm->statement.sqlserver.hStmt,
 				SQL_HANDLE_STMT,
-				SQLNumResultCols(*stm->statement.sqlserver.hStmt, &stm->statement.sqlserver.sNumResults));
+				SQLNumResultCols(*stm->statement.sqlserver.hStmt, &stm->statement.sqlserver.cColCount));
 
-			if (stm->statement.sqlserver.sNumResults > 0)
+			if (stm->statement.sqlserver.cColCount > 0)
 			{
-				//DisplayResults(*stm->statement.sqlserver.hStmt, sNumResults);
+				BindAllResultSetColumns(conn, stm);
+
+				TRYODBC(*stm->statement.sqlserver.hStmt,
+					SQL_HANDLE_STMT,
+					RetCode = SQLFetch(*stm->statement.sqlserver.hStmt));
+				
+				stm->statement.sqlserver.isEof = (RetCode == SQL_NO_DATA_FOUND);
 			}
 			else
 			{
@@ -148,15 +478,16 @@ sqlserverExecuteSelectStatement(
 			fwprintf(stderr, L"Unexpected return code %hd!\n", RetCode);
 
 	}
+	/*
 	TRYODBC(*stm->statement.sqlserver.hStmt,
 		SQL_HANDLE_STMT,
-		SQLFreeStmt(*stm->statement.sqlserver.hStmt, SQL_CLOSE));
+		SQLFreeStmt(*stm->statement.sqlserver.hStmt, SQL_CLOSE));*/
 Exit:
 	// Free ODBC handles and exit
 
 	if (*stm->statement.sqlserver.hStmt)
 	{
-		SQLFreeHandle(SQL_HANDLE_STMT, *stm->statement.sqlserver.hStmt);
+		//SQLFreeHandle(SQL_HANDLE_STMT, *stm->statement.sqlserver.hStmt);
 	}
 
 	/*if (hDbc)
@@ -183,10 +514,15 @@ sqlserverCreateStatement(
 	DBInt_Statement* retObj = (DBInt_Statement*)mkMalloc(conn->heapHandle, sizeof(DBInt_Statement), __FILE__, __LINE__);
 	
 	retObj->statement.sqlserver.hStmt = mkMalloc(conn->heapHandle, sizeof(SQLHSTMT), __FILE__, __LINE__);
+	retObj->statement.sqlserver.isEof = FALSE;
 
 	TRYODBC(*conn->connection.sqlserverHandle,
 		SQL_HANDLE_DBC,
 		SQLAllocHandle(SQL_HANDLE_STMT, *conn->connection.sqlserverHandle, retObj->statement.sqlserver.hStmt));
+	
+	TRYODBC(*conn->connection.sqlserverHandle,
+		SQL_HANDLE_STMT,
+		SQLSetStmtAttr(*retObj->statement.sqlserver.hStmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_STATIC, 0));
 
 Exit:
 
@@ -663,32 +999,9 @@ SQLSERVER_INTERFACE_API void sqlserverBindString(DBInt_Connection* conn, DBInt_S
 	POSTCHECK(conn);
 }
 
-SQLSERVER_INTERFACE_API const char* sqlserverGetColumnNameByIndex(DBInt_Connection* conn, DBInt_Statement* stm, unsigned int index) {
-	PRECHECK(conn);
 
-	const char* columnName = NULL;
-	columnName = (const char*)PQfname(stm->statement.postgresql.resultSet, index);
-	return columnName;
-}
 
-SQLSERVER_INTERFACE_API const char* sqlserverGetColumnValueByColumnName(DBInt_Connection* conn, DBInt_Statement* stm, const char* columnName) {
-	PRECHECK(conn);
-	char* retVal = "";
 
-	int colNum = PQfnumber(stm->statement.postgresql.resultSet, columnName);
-	if (colNum < 0)
-	{
-		// Column number not found
-	}
-	else
-	{
-		if (stm->statement.postgresql.currentRowNum == -1) {
-			stm->statement.postgresql.currentRowNum = 0;
-		}
-		retVal = PQgetvalue(stm->statement.postgresql.resultSet, stm->statement.postgresql.currentRowNum, colNum);
-	}
-	return retVal;
-}
 
 
 SQLSERVER_INTERFACE_API unsigned int sqlserverGetColumnSize(DBInt_Connection* conn, DBInt_Statement* stm, const char* columnName) {
@@ -816,25 +1129,9 @@ SQLSERVER_INTERFACE_API int sqlserverGetLastError(DBInt_Connection* conn) {
 	return 0;
 }
 
-SQLSERVER_INTERFACE_API void sqlserverSeek(DBInt_Connection* conn, DBInt_Statement* stm, int rowNum) {
-	PRECHECK(conn);
-	if (rowNum > 0) {
-		stm->statement.postgresql.currentRowNum = rowNum - 1;
-	}
-}
 
-SQLSERVER_INTERFACE_API BOOL	sqlserverNext(DBInt_Statement* stm) {
-	stm->statement.postgresql.currentRowNum++;
-	return sqlserverIsEof(stm);
-}
 
-SQLSERVER_INTERFACE_API BOOL	sqlserverIsEof(DBInt_Statement* stm) {
-	if (stm == NULL || stm->statement.postgresql.resultSet == NULL) {
-		return TRUE;
-	}
-	int nor = PQntuples(stm->statement.postgresql.resultSet);
-	return (nor == 0 || stm->statement.postgresql.currentRowNum >= nor);
-}
+
 
 SQLSERVER_INTERFACE_API void	sqlserverFirst(DBInt_Statement* stm) {
 	stm->statement.postgresql.currentRowNum = 0;
