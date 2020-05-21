@@ -31,69 +31,33 @@ SQLHENV     hEnv = NULL;
 /******************************************/
 
 
-SQLSERVER_INTERFACE_API 
-BOOL 
-sqlserverCommit(
-	DBInt_Connection * conn
-)
-{
-	char* query = "commit";
-
-	conn->errText = NULL;
-	conn->err = FALSE;
-
-	DBInt_Statement * stm = sqlserverCreateStatement(conn);
-	sqlserverPrepare(conn, stm, query);
-	sqlserverExecuteAnonymousBlock(conn, stm, query);
-	sqlserverFreeStatement(conn, stm);
-
-	// on success returns true
-	return (conn->errText != NULL);
-}
-
-
-int
-_GetColumnIndexByColumnName(
-	DBInt_Connection* conn,
-	DBInt_Statement* stm,
-	const char* columnName
-)
-{
-	int retval = -1;
-	const char* colName = NULL;
-	for (int i = 1; i <= stm->statement.sqlserver.cColCount; i++) {
-		colName = sqlserverGetColumnNameByIndex(conn, stm, i);
-		if (colName) {
-			if (_stricmp(colName, columnName) == 0) {
-				retval = i - 1;
-				break;
-			}
-		}
-	}
-	return retval;
-}
-
 
 SQLSERVER_INTERFACE_API
-SODIUM_DATABASE_COLUMN_TYPE
-sqlserverGetColumnType(
+void
+sqlserverPrepare(
 	DBInt_Connection* conn,
 	DBInt_Statement* stm,
-	const char* columnName
+	const char* sql
 )
 {
-	SODIUM_DATABASE_COLUMN_TYPE retval = HTSQL_COLUMN_TYPE_NOTSET;
 	conn->errText = NULL;
 	conn->err = FALSE;
-	
-	int colIndex = _GetColumnIndexByColumnName(conn, stm, columnName);
-	if (colIndex > -1) {
-		BINDING* bind = &stm->statement.sqlserver.resultSet[colIndex];
-		retval = bind->dataType;
-	}
 
-	return retval;
+	// convertion char sql to wchar_t sql
+	size_t sourceCharCount = strlen(sql);
+	size_t memSize = (sizeof(wchar_t) * sourceCharCount) + sizeof(wchar_t);
+	SQLWCHAR* wSql = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
+	mbstowcs_s(NULL, wSql, sourceCharCount + 1, sql, sourceCharCount);
+
+	// Prepare
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLPrepare(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS));
+
+Exit:
+	return;
 }
+
 
 SQLSERVER_INTERFACE_API 
 void 
@@ -124,12 +88,15 @@ sqlserverBindString(
 			&DecimalDigitsPtr,
 			&NullablePtr));
 	
-	size_t cCount = strlen(bindVariableValue);
-	wchar_t *wValue = mkMalloc(conn->heapHandle, cCount * sizeof(wchar_t), __FILE__, __LINE__);
+	/*size_t cCount = valueLength;
+	wchar_t *wValue = mkMalloc(conn->heapHandle, (cCount+1) * sizeof(wchar_t), __FILE__, __LINE__);
 	mbstowcs_s(NULL, wValue, cCount+1, bindVariableValue, cCount);
-	wValue[cCount] = L'\0';
+	wValue[cCount] = L'\0';*/
 
-	strlenOrIndPtr = cCount;
+	char *val = mkMalloc(conn->heapHandle, ParameterSizePtr+1, __FILE__, __LINE__);
+	strcpy_s(val, ParameterSizePtr, bindVariableValue);
+
+	//strlenOrIndPtr = ParameterSizePtr;
 
 	retCode = SQLBindParameter(
 		*stm->statement.sqlserver.hStmt, //	StatementHandle
@@ -137,9 +104,9 @@ sqlserverBindString(
 		SQL_PARAM_INPUT,		//	InputOutputType
 		SQL_C_CHAR,				//	ValueType
 		SQL_CHAR, //DataTypePtr,			//	ParameterType
-		cCount, //ParameterSizePtr,		//	ColumnSize
-		0, //DecimalDigitsPtr,		//	DecimalDigits, ignored for character data types
-		wValue,		//	ParameterValuePtr
+		ParameterSizePtr+1, //ParameterSizePtr,		//	ColumnSize
+		0,						 //DecimalDigitsPtr,		//	DecimalDigits, ignored for character data types
+		val,		//	ParameterValuePtr
 		0, 			//	BufferLength
 		&strlenOrIndPtr			//	StrLen_or_IndPtr
 	);
@@ -358,31 +325,52 @@ Exit:
 	return stm->statement.sqlserver.isEof;
 }
 
-SQLSERVER_INTERFACE_API 
-void 
-sqlserverPrepare(
-	DBInt_Connection * conn, 
-	DBInt_Statement * stm, 
-	const char * sql
+
+int
+_GetColumnIndexByColumnName(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* columnName
 )
 {
+	int retval = -1;
+	const char* colName = NULL;
+	for (int i = 1; i <= stm->statement.sqlserver.cColCount; i++) {
+		colName = sqlserverGetColumnNameByIndex(conn, stm, i);
+		if (colName) {
+			if (_stricmp(colName, columnName) == 0) {
+				retval = i - 1;
+				break;
+			}
+		}
+	}
+	return retval;
+}
+
+
+SQLSERVER_INTERFACE_API
+SODIUM_DATABASE_COLUMN_TYPE
+sqlserverGetColumnType(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* columnName
+)
+{
+	SODIUM_DATABASE_COLUMN_TYPE retval = HTSQL_COLUMN_TYPE_NOTSET;
 	conn->errText = NULL;
 	conn->err = FALSE;
 
-	// convertion char sql to wchar_t sql
-	size_t sourceCharCount = strlen(sql);
-	size_t memSize = (sizeof(wchar_t) * sourceCharCount) + sizeof(wchar_t);
-	SQLWCHAR* wSql = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
-	mbstowcs_s(NULL, wSql, sourceCharCount + 1, sql, sourceCharCount);
+	int colIndex = _GetColumnIndexByColumnName(conn, stm, columnName);
+	if (colIndex > -1) {
+		BINDING* bind = &stm->statement.sqlserver.resultSet[colIndex];
+		retval = bind->dataType;
+	}
 
-	// Prepare
-	TRYODBC(*stm->statement.sqlserver.hStmt,
-		SQL_HANDLE_STMT,
-		SQLPrepare(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS));
-
-Exit:
-	return;
+	return retval;
 }
+
+
+
 
 SQLSERVER_INTERFACE_API 
 BOOL	
@@ -749,6 +737,27 @@ sqlserverCreateConnection(
 Exit:
 	
 	return conn;
+}
+
+
+SQLSERVER_INTERFACE_API
+BOOL
+sqlserverCommit(
+	DBInt_Connection* conn
+)
+{
+	char* query = "commit";
+
+	conn->errText = NULL;
+	conn->err = FALSE;
+
+	DBInt_Statement* stm = sqlserverCreateStatement(conn);
+	sqlserverPrepare(conn, stm, query);
+	sqlserverExecuteAnonymousBlock(conn, stm, query);
+	sqlserverFreeStatement(conn, stm);
+
+	// on success returns true
+	return (conn->errText != NULL);
 }
 
 /************************************************************************
