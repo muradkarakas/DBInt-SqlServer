@@ -7,9 +7,9 @@
 #define SQLSERVER_INTERFACE_API __declspec(dllexport)
 
 /* DDL's PRIVATE FUNCTIONS  */
-void							HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
-void							BindAllResultSetColumns(DBInt_Connection* conn, DBInt_Statement* stm);
-SQLRETURN						_bind(DBInt_Connection* conn, DBInt_Statement* stm, char* bindVariableName, char* bindVariableValue, size_t valueLength);
+void			_HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
+void			_BindAllResultSetColumns(DBInt_Connection* conn, DBInt_Statement* stm);
+int				_GetColumnIndexByColumnName(DBInt_Connection * conn, DBInt_Statement * stm, const char* columnName);
 
 /* DDL's PUBLIC FUNCTIONS  */
 SQLSERVER_INTERFACE_API void					sqlserverInitConnection(DBInt_Connection* conn);

@@ -15,7 +15,7 @@ SQLHENV     hEnv = NULL;
 #define TRYODBC(h, ht, x)   {   RETCODE rc = x;\
                                 if (rc != SQL_SUCCESS) \
                                 { \
-                                    HandleDiagnosticRecord (h, ht, rc); \
+                                    _HandleDiagnosticRecord (h, ht, rc); \
                                 } \
                                 if (rc == SQL_ERROR) \
                                 { \
@@ -31,52 +31,68 @@ SQLHENV     hEnv = NULL;
 /******************************************/
 
 
-
-/******************************************/
-/* Forward references                     */
-/******************************************/
-
-void HandleDiagnosticRecord(SQLHANDLE      hHandle,
-	SQLSMALLINT    hType,
-	RETCODE        RetCode);
-
-void DisplayResults(HSTMT       hStmt,
-	SQLSMALLINT cCols);
-
-void AllocateBindings(
-	DBInt_Connection* conn,
-	HSTMT				hStmt,
-	SQLSMALLINT			cCols,
-	BINDING** ppBinding);
-
-
-SQLRETURN
-_bind(
-	DBInt_Connection* conn,
-	DBInt_Statement* stm,
-	char* bindVariableName,
-	char* bindVariableValue,
-	size_t valueLength
+SQLSERVER_INTERFACE_API 
+BOOL 
+sqlserverCommit(
+	DBInt_Connection * conn
 )
 {
-	SQLUSMALLINT	colIndex = 1;
-	SQLRETURN		retCode;
-	SQLLEN			strlenOrIndPtr = SQL_NTS;
+	char* query = "commit";
 
-	retCode = SQLBindParameter(
-		*stm->statement.sqlserver.hStmt, //	StatementHandle
-		colIndex,				//	ParameterNumber
-		SQL_PARAM_INPUT,		//	InputOutputType
-		SQL_C_CHAR,				//	ValueType
-		SQL_CHAR,				//	ParameterType
-		valueLength,			//	ColumnSize
-		0,						//	DecimalDigits
-		bindVariableValue,		//	ParameterValuePtr
-		valueLength,			//	BufferLength
-		&strlenOrIndPtr			//	StrLen_or_IndPtr
-	);
+	conn->errText = NULL;
+	conn->err = FALSE;
 
-	return retCode;
+	DBInt_Statement * stm = sqlserverCreateStatement(conn);
+	sqlserverPrepare(conn, stm, query);
+	sqlserverExecuteAnonymousBlock(conn, stm, query);
+	sqlserverFreeStatement(conn, stm);
+
+	// on success returns true
+	return (conn->errText != NULL);
+}
+
+
+int
+_GetColumnIndexByColumnName(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* columnName
+)
+{
+	int retval = -1;
+	const char* colName = NULL;
+	for (int i = 1; i <= stm->statement.sqlserver.cColCount; i++) {
+		colName = sqlserverGetColumnNameByIndex(conn, stm, i);
+		if (colName) {
+			if (_stricmp(colName, columnName) == 0) {
+				retval = i - 1;
+				break;
+			}
+		}
+	}
+	return retval;
+}
+
+
+SQLSERVER_INTERFACE_API
+SODIUM_DATABASE_COLUMN_TYPE
+sqlserverGetColumnType(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* columnName
+)
+{
+	SODIUM_DATABASE_COLUMN_TYPE retval = HTSQL_COLUMN_TYPE_NOTSET;
+	conn->errText = NULL;
+	conn->err = FALSE;
+	
+	int colIndex = _GetColumnIndexByColumnName(conn, stm, columnName);
+	if (colIndex > -1) {
+		BINDING* bind = &stm->statement.sqlserver.resultSet[colIndex];
+		retval = bind->dataType;
+	}
+
+	return retval;
 }
 
 SQLSERVER_INTERFACE_API 
@@ -89,7 +105,47 @@ sqlserverBindString(
 	size_t valueLength
 )
 {
-	_bind(conn, stm, bindVariableName, bindVariableValue, valueLength);
+	SQLUSMALLINT	colIndex = atoi(bindVariableName);
+	SQLRETURN		retCode;
+	SQLINTEGER 		strlenOrIndPtr = SQL_NTS;
+
+	SQLSMALLINT DataTypePtr;
+	SQLULEN ParameterSizePtr;
+	SQLSMALLINT DecimalDigitsPtr;
+	SQLSMALLINT NullablePtr;
+
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLDescribeParam(
+			*stm->statement.sqlserver.hStmt, //	StatementHandle
+			(SQLUSMALLINT) colIndex,
+			&DataTypePtr,
+			&ParameterSizePtr,
+			&DecimalDigitsPtr,
+			&NullablePtr));
+	
+	size_t cCount = strlen(bindVariableValue);
+	wchar_t *wValue = mkMalloc(conn->heapHandle, cCount * sizeof(wchar_t), __FILE__, __LINE__);
+	mbstowcs_s(NULL, wValue, cCount+1, bindVariableValue, cCount);
+	wValue[cCount] = L'\0';
+
+	strlenOrIndPtr = cCount;
+
+	retCode = SQLBindParameter(
+		*stm->statement.sqlserver.hStmt, //	StatementHandle
+		colIndex,				//	ParameterNumber
+		SQL_PARAM_INPUT,		//	InputOutputType
+		SQL_C_CHAR,				//	ValueType
+		SQL_CHAR, //DataTypePtr,			//	ParameterType
+		cCount, //ParameterSizePtr,		//	ColumnSize
+		0, //DecimalDigitsPtr,		//	DecimalDigits, ignored for character data types
+		wValue,		//	ParameterValuePtr
+		0, 			//	BufferLength
+		&strlenOrIndPtr			//	StrLen_or_IndPtr
+	);
+
+Exit:
+	return;
 }
 
 
@@ -104,7 +160,57 @@ sqlserverBindNumber(
 	size_t valueLength
 )
 {
+	SQLUSMALLINT	colIndex = atoi(bindVariableName);
+	SQLRETURN		retCode;
+	SQLLEN			strlenOrIndPtr = 0;
+	long			value = atol(bindVariableValue);
 
+	SQLSMALLINT DataTypePtr;
+	SQLULEN ParameterSizePtr;
+	SQLSMALLINT DecimalDigitsPtr;
+	SQLSMALLINT NullablePtr;
+
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLDescribeParam(
+			*stm->statement.sqlserver.hStmt, //	StatementHandle
+			(SQLUSMALLINT)colIndex,
+			&DataTypePtr,
+			&ParameterSizePtr,
+			&DecimalDigitsPtr,
+			&NullablePtr));
+
+	retCode = SQLBindParameter(
+		*stm->statement.sqlserver.hStmt, //	StatementHandle
+		colIndex,				//	ParameterNumber
+		SQL_PARAM_INPUT,		//	InputOutputType
+		SQL_C_ULONG,			//	ValueType
+		DataTypePtr,			//	ParameterType
+		ParameterSizePtr,						//	ColumnSize
+		DecimalDigitsPtr,						//	DecimalDigits
+		&value,					//	ParameterValuePtr
+		0,						//	BufferLength
+		&strlenOrIndPtr			//	StrLen_or_IndPtr
+	);
+Exit:
+
+	return;
+}
+
+SQLSERVER_INTERFACE_API
+char*
+sqlserverExecuteInsertStatement(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* sql
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+	char* retval = mkMalloc(conn->heapHandle, 21, __FILE__, __LINE__);
+	sqlserverExecuteSelectStatement(conn, stm, sql);
+	mkItoa(stm->statement.sqlserver.cRowCount, retval);
+	return retval;
 }
 
 SQLSERVER_INTERFACE_API 
@@ -183,119 +289,6 @@ sqlserverGetColumnNameByIndex(
 	return columnName;
 }
 
-/*void AllocateBindings(
-	DBInt_Connection	* conn,
-	HSTMT				hStmt,
-	SQLSMALLINT			cCols,
-	BINDING				** ppBinding)
-{
-	SQLSMALLINT     iCol;
-	BINDING* pThisBinding;
-	SQLLEN          cchDisplay, ssType;
-	SQLSMALLINT     cchColumnNameLength;
-
-	for (iCol = 0; iCol < cCols; iCol++)
-	{
-		pThisBinding = (BINDING*)(malloc(sizeof(BINDING)));
-		if (!(pThisBinding))
-		{
-			fwprintf(stderr, L"Out of memory!\n");
-			exit(-100);
-		}
-
-		*ppBinding = pThisBinding;
-
-		// Figure out the display length of the column (we will
-		// bind to char since we are only displaying data, in general
-		// you should bind to the appropriate C type if you are going
-		// to manipulate data since it is much faster...)
-
-		TRYODBC(hStmt,
-			SQL_HANDLE_STMT,
-			SQLColAttribute(hStmt,
-				iCol,
-				SQL_DESC_DISPLAY_SIZE,
-				NULL,
-				0,
-				NULL,
-				&cchDisplay));
-
-
-		// Figure out if this is a character or numeric column; this is
-		// used to determine if we want to display the data left- or right-
-		// aligned.
-
-		// SQL_DESC_CONCISE_TYPE maps to the 1.x SQL_COLUMN_TYPE. 
-		// This is what you must use if you want to work
-		// against a 2.x driver.
-
-		TRYODBC(hStmt,
-			SQL_HANDLE_STMT,
-			SQLColAttribute(hStmt,
-				iCol,
-				SQL_DESC_CONCISE_TYPE,
-				NULL,
-				0,
-				NULL,
-				&ssType));
-
-
-		pThisBinding->fChar = (ssType == SQL_CHAR ||
-			ssType == SQL_VARCHAR ||
-			ssType == SQL_LONGVARCHAR);
-
-		// Allocate a buffer big enough to hold the text representation
-		// of the data.  Add one character for the null terminator
-
-		pThisBinding->wRowData = (WCHAR*)malloc((cchDisplay + 1) * sizeof(WCHAR));
-
-		if (!(pThisBinding->wszBuffer))
-		{
-			fwprintf(stderr, L"Out of memory!\n");
-			exit(-100);
-		}
-
-		// Map this buffer to the driver's buffer.   At Fetch time,
-		// the driver will fill in this data.  Note that the size is 
-		// count of bytes (for Unicode).  All ODBC functions that take
-		// SQLPOINTER use count of bytes; all functions that take only
-		// strings use count of characters.
-
-		TRYODBC(hStmt,
-			SQL_HANDLE_STMT,
-			SQLBindCol(hStmt,
-				iCol,
-				SQL_C_TCHAR,
-				(SQLPOINTER)pThisBinding->wszBuffer,
-				(cchDisplay + 1) * sizeof(WCHAR),
-				&pThisBinding->indPtr));
-
-
-		// Now set the display size that we will use to display
-		// the data.   Figure out the length of the column name
-		wchar_t aa[500];
-
-		TRYODBC(hStmt,
-			SQL_HANDLE_STMT,
-			SQLColAttribute(hStmt,
-				iCol,
-				SQL_DESC_NAME,
-				aa,
-				500,
-				&cchColumnNameLength,
-				NULL));
-
-		pThisBinding->cDisplaySize = max((SQLSMALLINT)cchDisplay, cchColumnNameLength);
-	}
-
-	return;
-
-Exit:
-
-	exit(-1);
-
-	return;
-}*/
 
 SQLSERVER_INTERFACE_API 
 const char * 
@@ -305,13 +298,11 @@ sqlserverGetColumnValueByColumnName(
 	const char* columnName
 )
 {
-	const char* retval = "";
-	const char* colName = NULL;
+	const char * retval = "";
+	const char * colName = NULL;
 
 	RETCODE         RetCode = SQL_SUCCESS;
 	int             iCount = 0;
-
-	// Allocate memory for each column 
 
 	for (int i = 1; i <= stm->statement.sqlserver.cColCount; i++) {
 		colName = sqlserverGetColumnNameByIndex(conn, stm, i);
@@ -377,6 +368,20 @@ sqlserverPrepare(
 {
 	conn->errText = NULL;
 	conn->err = FALSE;
+
+	// convertion char sql to wchar_t sql
+	size_t sourceCharCount = strlen(sql);
+	size_t memSize = (sizeof(wchar_t) * sourceCharCount) + sizeof(wchar_t);
+	SQLWCHAR* wSql = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
+	mbstowcs_s(NULL, wSql, sourceCharCount + 1, sql, sourceCharCount);
+
+	// Prepare
+	TRYODBC(*stm->statement.sqlserver.hStmt,
+		SQL_HANDLE_STMT,
+		SQLPrepare(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS));
+
+Exit:
+	return;
 }
 
 SQLSERVER_INTERFACE_API 
@@ -406,7 +411,7 @@ Exit:
 }
 
 void 
-BindAllResultSetColumns(
+_BindAllResultSetColumns(
 	DBInt_Connection * conn,
 	DBInt_Statement  * stm
 )
@@ -438,14 +443,9 @@ BindAllResultSetColumns(
 				NULL,
 				&pThisBinding->rowDataCharacterCount));
 
-		// Figure out if this is a character or numeric column; this is
-		// used to determine if we want to display the data left- or right-
-		// aligned.
-
-		// SQL_DESC_CONCISE_TYPE maps to the 1.x SQL_COLUMN_TYPE. 
-		// This is what you must use if you want to work
-		// against a 2.x driver.
-
+		// Figure out data type. All types can be found at
+		//	https://docs.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-data-types?view=sql-server-ver15
+		//
 		TRYODBC(*stm->statement.sqlserver.hStmt,
 			SQL_HANDLE_STMT,
 			SQLColAttribute(*stm->statement.sqlserver.hStmt,
@@ -456,10 +456,49 @@ BindAllResultSetColumns(
 				NULL,
 				&ssType));
 
-
-		pThisBinding->fChar = (ssType == SQL_CHAR ||
-			ssType == SQL_VARCHAR ||
-			ssType == SQL_LONGVARCHAR);
+		switch (ssType) {
+			case SQL_INTERVAL_DAY:
+			case SQL_INTERVAL_HOUR:
+			case SQL_INTERVAL_MINUTE:
+			case SQL_INTERVAL_SECOND:
+			case SQL_INTERVAL_DAY_TO_HOUR:
+			case SQL_INTERVAL_DAY_TO_MINUTE:
+			case SQL_INTERVAL_DAY_TO_SECOND:
+			case SQL_INTERVAL_HOUR_TO_MINUTE:
+			case SQL_INTERVAL_HOUR_TO_SECOND:
+			case SQL_INTERVAL_MINUTE_TO_SECOND:
+			case SQL_DECIMAL:
+			case SQL_NUMERIC:
+			case SQL_SMALLINT:
+			case SQL_INTEGER:
+			case SQL_REAL:
+			case SQL_FLOAT:
+			case SQL_DOUBLE:
+			case SQL_TINYINT:
+			case SQL_BIGINT: {
+				pThisBinding->dataType = HTSQL_COLUMN_TYPE_NUMBER;
+				break;
+			}
+			case SQL_GUID:
+			case SQL_CHAR:
+			case SQL_VARCHAR:
+			case SQL_LONGVARCHAR: {
+				pThisBinding->dataType = HTSQL_COLUMN_TYPE_TEXT;
+				break; 
+			}
+			case SQL_WCHAR: 
+			case SQL_WVARCHAR:
+			case SQL_WLONGVARCHAR: {
+				// TODO: ??? wchar_t
+				pThisBinding->dataType = HTSQL_COLUMN_TYPE_TEXT;
+				break; 
+			}
+			case SQL_TYPE_DATE:
+			case SQL_TYPE_TIMESTAMP: {
+				pThisBinding->dataType = HTSQL_COLUMN_TYPE_DATE;
+				break;
+			}
+		}
 
 		// Allocate a buffer big enough to hold columnd data in wchar_t format
 		size_t wMemSize = ((pThisBinding->rowDataCharacterCount + 1) * sizeof(WCHAR));
@@ -530,18 +569,18 @@ sqlserverExecuteSelectStatement(
 	conn->err = FALSE;
 
 	// convertion char sql to wchar_t sql
-	size_t sourceCharCount = strlen(sql);
+	/*size_t sourceCharCount = strlen(sql);
 	size_t memSize = (sizeof(wchar_t) * sourceCharCount) + sizeof(wchar_t);
 	SQLWCHAR * wSql = mkMalloc(conn->heapHandle, memSize, __FILE__, __LINE__);
 	mbstowcs_s(NULL, wSql, sourceCharCount+1, sql, sourceCharCount);
-	
-	RetCode = SQLExecDirect(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS);
+	*/
+	RetCode = SQLExecute(*stm->statement.sqlserver.hStmt);
 
 	switch (RetCode)
 	{
 		case SQL_SUCCESS_WITH_INFO:
 		{
-			HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
+			_HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
 			// fall through
 		}
 		case SQL_SUCCESS:
@@ -554,7 +593,7 @@ sqlserverExecuteSelectStatement(
 
 			if (stm->statement.sqlserver.cColCount > 0)
 			{
-				BindAllResultSetColumns(conn, stm);
+				_BindAllResultSetColumns(conn, stm);
 
 				TRYODBC(*stm->statement.sqlserver.hStmt,
 					SQL_HANDLE_STMT,
@@ -574,7 +613,7 @@ sqlserverExecuteSelectStatement(
 
 		case SQL_ERROR:
 		{
-			HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
+			_HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
 			break;
 		}
 
@@ -721,9 +760,12 @@ Exit:
 /*      RetCode     Return code of failing command
 /************************************************************************/
 
-void HandleDiagnosticRecord(SQLHANDLE      hHandle,
+void 
+_HandleDiagnosticRecord(
+	SQLHANDLE      hHandle,
 	SQLSMALLINT    hType,
-	RETCODE        RetCode)
+	RETCODE        RetCode
+)
 {
 	SQLSMALLINT iRec = 0;
 	SQLINTEGER  iError;
@@ -753,6 +795,15 @@ void HandleDiagnosticRecord(SQLHANDLE      hHandle,
 		}
 	}
 
+}
+
+SQLSERVER_INTERFACE_API 
+const char * 
+sqlserverGetLastErrorText(
+	DBInt_Connection * conn
+) 
+{
+	return conn->errText;
 }
 
 /*
@@ -841,24 +892,7 @@ SQLSERVER_INTERFACE_API BOOL sqlserverRollback(DBInt_Connection* conn) {
 	return (conn->errText != NULL);
 }
 
-SQLSERVER_INTERFACE_API BOOL sqlserverCommit(DBInt_Connection* conn) {
-	PRECHECK(conn);
 
-	conn->errText = NULL;
-	PGresult* res = PQexec(conn->connection.postgresqlHandle, "commit");
-	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-		conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-	}
-	PQclear(res);
-
-	// starting a new transaction
-	if (conn->errText == NULL) {
-		beginNewTransaction(conn);
-	}
-	POSTCHECK(conn);
-	// on success returns true
-	return (conn->errText != NULL);
-}
 
 
 
@@ -940,59 +974,6 @@ SQLSERVER_INTERFACE_API void* sqlserverGetLob(DBInt_Connection* conn, DBInt_Stat
 	POSTCHECK(conn);
 }
 
-SQLSERVER_INTERFACE_API char* sqlserverExecuteInsertStatement(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
-	PRECHECK(conn);
-
-	PGresult* res = NULL;
-	size_t	sizeOfRetval = 15;
-	char* retval = mkMalloc(conn->heapHandle, sizeOfRetval, __FILE__, __LINE__);
-	mkItoa(0, retval);
-
-	conn->errText = NULL;
-
-	if (stm->statement.postgresql.bindVariableCount == 0) {
-		// "insert" statement has no bind variables
-		res = PQexec(conn->connection.postgresqlHandle, sql);
-		if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-			conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-			PQclear(res);
-		}
-		else {
-			stm->statement.postgresql.currentRowNum = 0;
-			stm->statement.postgresql.resultSet = res;
-			char* rowCountAffected = PQcmdTuples(res);
-			strcpy_s(retval, sizeOfRetval, rowCountAffected);
-			//retval = postgresqlGetColumnValueByColumnName(conn, stm, "oid");
-		}
-	}
-	else {
-		// "insert" statement has bind variables
-		res = PQexecParams(conn->connection.postgresqlHandle,
-			sql,
-			stm->statement.postgresql.bindVariableCount,
-			stm->statement.postgresql.paramTypes,
-			(const char* const*)stm->statement.postgresql.bindVariables,
-			stm->statement.postgresql.paramSizes,
-			stm->statement.postgresql.paramFormats,
-			0);
-		ExecStatusType statusType = PQresultStatus(res);
-		if (statusType != PGRES_TUPLES_OK && statusType != PGRES_COMMAND_OK) {
-			conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-			PQclear(res);
-		}
-		else {
-			stm->statement.postgresql.currentRowNum = 0;
-			stm->statement.postgresql.resultSet = res;
-			char* rowCountAffected = PQcmdTuples(res);
-			strcpy_s(retval, sizeOfRetval, rowCountAffected);
-			//retval = postgresqlGetColumnValueByColumnName(conn, stm, "oid");
-		}
-	}
-
-	POSTCHECK(conn);
-	return retval;
-}
-
 SQLSERVER_INTERFACE_API void sqlserverExecuteUpdateStatement(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
 	PRECHECK(conn);
 
@@ -1047,49 +1028,6 @@ SQLSERVER_INTERFACE_API unsigned int sqlserverGetColumnSize(DBInt_Connection* co
 	return colSize;
 }
 
-SQLSERVER_INTERFACE_API
-SODIUM_DATABASE_COLUMN_TYPE
-sqlserverGetColumnType(
-	DBInt_Connection* conn,
-	DBInt_Statement* stm,
-	const char* columnName
-)
-{
-	PRECHECK(conn);
-
-	conn->errText = NULL;
-	SODIUM_DATABASE_COLUMN_TYPE retVal = HTSQL_COLUMN_TYPE_NOTSET;
-	int colNum = PQfnumber(stm->statement.postgresql.resultSet, columnName);
-	Oid ctype = PQftype(stm->statement.postgresql.resultSet, colNum);
-	switch (ctype) {
-	case TIMESTAMPTZOID:
-	case ABSTIMEOID:
-	case TIMESTAMPOID:
-	case DATEOID: {
-		retVal = HTSQL_COLUMN_TYPE_DATE;
-		break;
-	}
-	case CHAROID:
-	case TEXTOID: {
-		retVal = HTSQL_COLUMN_TYPE_TEXT;
-		break;
-	}
-	case INT8OID:
-	case INT2OID:
-	case NUMERICOID:
-	case INT4OID: {
-		retVal = HTSQL_COLUMN_TYPE_NUMBER;
-		break;
-	}
-	case OIDOID:
-	case BYTEAOID: {
-		retVal = HTSQL_COLUMN_TYPE_LOB;
-		break;
-	}
-	}
-	return retVal;
-}
-
 SQLSERVER_INTERFACE_API void sqlserverExecuteDescribe(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
 	PRECHECK(conn);
 
@@ -1142,10 +1080,7 @@ SQLSERVER_INTERFACE_API unsigned int sqlserverGetColumnCount(DBInt_Connection* c
 	return colCount;
 }
 
-SQLSERVER_INTERFACE_API const char* sqlserverGetLastErrorText(DBInt_Connection* conn) {
-	PRECHECK(conn);
-	return conn->errText;
-}
+
 
 SQLSERVER_INTERFACE_API int sqlserverGetLastError(DBInt_Connection* conn) {
 	return 0;
