@@ -30,7 +30,122 @@ SQLHENV     hEnv = NULL;
 /* a column.
 /******************************************/
 
+void 
+SQLBindStringW(
+	DBInt_Connection * conn, 
+	DBInt_Statement* stm,
+	SQLUSMALLINT colIndex,
+	LPCWSTR szString
+)
+{
+	ODBC_BINDING * binding = &stm->statement.sqlserver.bindVariables[colIndex - 1];
 
+	if (binding->fCType == SQL_C_NUMERIC)
+	{
+		*((long*)binding->buffer) = _wtol(szString);
+		
+		TRYODBC(*stm->statement.sqlserver.hStmt,
+			SQL_HANDLE_STMT,
+			SQLBindParameter(
+				*stm->statement.sqlserver.hStmt, 
+				colIndex, 
+				SQL_PARAM_INPUT, 
+				SQL_C_SSHORT, 
+				SQL_INTEGER, 
+				0, 
+				0, 
+				binding->buffer, 
+				0, 
+				&binding->pcbValue));
+	}
+	else if (stm->statement.sqlserver.bindVariables[colIndex - 1].fCType == SQL_C_WCHAR) 
+	{
+		SQLULEN len = wcslen(szString);
+		size_t size = len * sizeof(WCHAR);
+		memcpy_s(binding->buffer, size, szString, size);
+		binding->pcbValue = SQL_NTS;
+
+		TRYODBC(*stm->statement.sqlserver.hStmt,
+			SQL_HANDLE_STMT,
+			SQLBindParameter(
+				*stm->statement.sqlserver.hStmt, 
+				colIndex, 
+				SQL_PARAM_INPUT, 
+				SQL_C_WCHAR, 
+				SQL_WCHAR,
+				len + 2,
+				0, 
+				binding->buffer,
+				size + 22,
+				&binding->pcbValue));
+	}
+
+Exit:
+	return;
+}
+
+SQLSERVER_INTERFACE_API 
+void 
+sqlserverBindString(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm, 
+	char * bindVariableName, 
+	char * bindVariableValue, 
+	size_t valueLength
+)
+{
+	SQLUSMALLINT	colIndex = atoi(bindVariableName);
+
+	size_t cCount = valueLength;
+	wchar_t *wValue = mkMalloc(conn->heapHandle, (cCount + 1) * sizeof(wchar_t), __FILE__, __LINE__);
+	mbstowcs_s(NULL, wValue, cCount+1, bindVariableValue, cCount);
+	wValue[cCount] = L'\0';
+
+	SQLBindStringW(conn, stm, colIndex, wValue);
+
+	mkFree(conn->heapHandle, wValue);
+}
+
+
+SQLSERVER_INTERFACE_API 
+void
+sqlserverBindNumber(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm, 
+	char * bindVariableName, 
+	char * bindVariableValue,
+	size_t valueLength
+)
+{
+	SQLUSMALLINT	colIndex = atoi(bindVariableName);
+
+	size_t cCount = valueLength;
+	wchar_t* wValue = mkMalloc(conn->heapHandle, (cCount + 1) * sizeof(wchar_t), __FILE__, __LINE__);
+	mbstowcs_s(NULL, wValue, cCount + 1, bindVariableValue, cCount);
+	wValue[cCount] = L'\0';
+
+	SQLBindStringW(conn, stm, colIndex, wValue);
+
+	mkFree(conn->heapHandle, wValue);
+
+	return;
+}
+
+SQLSERVER_INTERFACE_API
+char*
+sqlserverExecuteInsertStatement(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* sql
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+	char* retval = mkMalloc(conn->heapHandle, 21, __FILE__, __LINE__);
+	sqlserverExecuteSelectStatement(conn, stm, sql);
+	mkItoa(stm->statement.sqlserver.cRowCount, retval);
+	return retval;
+}
 
 SQLSERVER_INTERFACE_API
 void
@@ -54,131 +169,80 @@ sqlserverPrepare(
 		SQL_HANDLE_STMT,
 		SQLPrepare(*stm->statement.sqlserver.hStmt, wSql, SQL_NTS));
 
-Exit:
-	return;
-}
-
-
-SQLSERVER_INTERFACE_API 
-void 
-sqlserverBindString(
-	DBInt_Connection * conn,
-	DBInt_Statement * stm, 
-	char * bindVariableName, 
-	char * bindVariableValue, 
-	size_t valueLength
-)
-{
-	SQLUSMALLINT	colIndex = atoi(bindVariableName);
-	SQLRETURN		retCode;
-	SQLINTEGER 		strlenOrIndPtr = SQL_NTS;
-
-	SQLSMALLINT DataTypePtr;
-	SQLULEN ParameterSizePtr;
-	SQLSMALLINT DecimalDigitsPtr;
-	SQLSMALLINT NullablePtr;
-
 	TRYODBC(*stm->statement.sqlserver.hStmt,
 		SQL_HANDLE_STMT,
-		SQLDescribeParam(
-			*stm->statement.sqlserver.hStmt, //	StatementHandle
-			(SQLUSMALLINT) colIndex,
-			&DataTypePtr,
-			&ParameterSizePtr,
-			&DecimalDigitsPtr,
-			&NullablePtr));
-	
-	/*size_t cCount = valueLength;
-	wchar_t *wValue = mkMalloc(conn->heapHandle, (cCount+1) * sizeof(wchar_t), __FILE__, __LINE__);
-	mbstowcs_s(NULL, wValue, cCount+1, bindVariableValue, cCount);
-	wValue[cCount] = L'\0';*/
+		SQLNumParams(
+			*stm->statement.sqlserver.hStmt,
+			&stm->statement.sqlserver.ParameterCount));
 
-	char *val = mkMalloc(conn->heapHandle, ParameterSizePtr+1, __FILE__, __LINE__);
-	strcpy_s(val, ParameterSizePtr, bindVariableValue);
+	if (stm->statement.sqlserver.ParameterCount > 0) {
 
-	//strlenOrIndPtr = ParameterSizePtr;
+		stm->statement.sqlserver.bindVariables = mkMalloc(conn->heapHandle, stm->statement.sqlserver.ParameterCount * sizeof(ODBC_BINDING), __FILE__, __LINE__);
+		//
+		//	Binding memory for parameters
+		//	
+		for (int colIndex = 0; colIndex < stm->statement.sqlserver.ParameterCount; colIndex++) {
+			SQLSMALLINT		DataTypePtr;
+			SQLULEN			ParameterSizePtr;
+			SQLSMALLINT		DecimalDigitsPtr;
+			SQLSMALLINT		NullablePtr;
+			SQLINTEGER 		strlenOrIndPtr = SQL_NTS;
 
-	retCode = SQLBindParameter(
-		*stm->statement.sqlserver.hStmt, //	StatementHandle
-		colIndex,				//	ParameterNumber
-		SQL_PARAM_INPUT,		//	InputOutputType
-		SQL_C_CHAR,				//	ValueType
-		SQL_CHAR, //DataTypePtr,			//	ParameterType
-		ParameterSizePtr+1, //ParameterSizePtr,		//	ColumnSize
-		0,						 //DecimalDigitsPtr,		//	DecimalDigits, ignored for character data types
-		val,		//	ParameterValuePtr
-		0, 			//	BufferLength
-		&strlenOrIndPtr			//	StrLen_or_IndPtr
-	);
+			//	describing parameter
+			TRYODBC(*stm->statement.sqlserver.hStmt,
+				SQL_HANDLE_STMT,
+				SQLDescribeParam(
+					*stm->statement.sqlserver.hStmt, //	StatementHandle
+					(SQLUSMALLINT)colIndex + 1,
+					&DataTypePtr,
+					&ParameterSizePtr,
+					&DecimalDigitsPtr,
+					&NullablePtr));
+
+			switch (DataTypePtr) {
+				case SQL_CHAR:
+				case SQL_VARCHAR:
+				case SQL_WVARCHAR:
+				case SQL_DECIMAL: {
+					ParameterSizePtr *= 3;
+					stm->statement.sqlserver.bindVariables[colIndex].fCType = SQL_C_WCHAR;
+					break;
+				}
+				case SQL_NUMERIC: {
+					stm->statement.sqlserver.bindVariables[colIndex].fCType = SQL_C_NUMERIC;
+					break;
+				}
+				case SQL_INTEGER: {
+					stm->statement.sqlserver.bindVariables[colIndex].fCType = SQL_C_LONG;
+					break;
+				}
+				case SQL_SMALLINT: {
+					stm->statement.sqlserver.bindVariables[colIndex].fCType = SQL_C_SHORT;
+					break;
+				}
+				case SQL_REAL: {
+					stm->statement.sqlserver.bindVariables[colIndex].fCType = SQL_C_FLOAT;
+					break;
+				}
+				case SQL_DOUBLE:
+				case SQL_FLOAT: {
+					stm->statement.sqlserver.bindVariables[colIndex].fCType = SQL_C_DOUBLE;
+					break;
+				}
+			}
+
+			stm->statement.sqlserver.bindVariables[colIndex].buffer_length = ParameterSizePtr + sizeof(wchar_t);
+			stm->statement.sqlserver.bindVariables[colIndex].buffer =
+				mkMalloc(conn->heapHandle, stm->statement.sqlserver.bindVariables[colIndex].buffer_length, __FILE__, __LINE__);
+
+		}
+	}
 
 Exit:
 	return;
 }
 
 
-
-SQLSERVER_INTERFACE_API 
-void
-sqlserverBindNumber(
-	DBInt_Connection * conn,
-	DBInt_Statement * stm, 
-	char * bindVariableName, 
-	char * bindVariableValue,
-	size_t valueLength
-)
-{
-	SQLUSMALLINT	colIndex = atoi(bindVariableName);
-	SQLRETURN		retCode;
-	SQLLEN			strlenOrIndPtr = 0;
-	long			value = atol(bindVariableValue);
-
-	SQLSMALLINT DataTypePtr;
-	SQLULEN ParameterSizePtr;
-	SQLSMALLINT DecimalDigitsPtr;
-	SQLSMALLINT NullablePtr;
-
-	TRYODBC(*stm->statement.sqlserver.hStmt,
-		SQL_HANDLE_STMT,
-		SQLDescribeParam(
-			*stm->statement.sqlserver.hStmt, //	StatementHandle
-			(SQLUSMALLINT)colIndex,
-			&DataTypePtr,
-			&ParameterSizePtr,
-			&DecimalDigitsPtr,
-			&NullablePtr));
-
-	retCode = SQLBindParameter(
-		*stm->statement.sqlserver.hStmt, //	StatementHandle
-		colIndex,				//	ParameterNumber
-		SQL_PARAM_INPUT,		//	InputOutputType
-		SQL_C_ULONG,			//	ValueType
-		DataTypePtr,			//	ParameterType
-		ParameterSizePtr,						//	ColumnSize
-		DecimalDigitsPtr,						//	DecimalDigits
-		&value,					//	ParameterValuePtr
-		0,						//	BufferLength
-		&strlenOrIndPtr			//	StrLen_or_IndPtr
-	);
-Exit:
-
-	return;
-}
-
-SQLSERVER_INTERFACE_API
-char*
-sqlserverExecuteInsertStatement(
-	DBInt_Connection* conn,
-	DBInt_Statement* stm,
-	const char* sql
-)
-{
-	conn->errText = NULL;
-	conn->err = FALSE;
-	char* retval = mkMalloc(conn->heapHandle, 21, __FILE__, __LINE__);
-	sqlserverExecuteSelectStatement(conn, stm, sql);
-	mkItoa(stm->statement.sqlserver.cRowCount, retval);
-	return retval;
-}
 
 SQLSERVER_INTERFACE_API 
 void 
@@ -223,6 +287,19 @@ sqlserverFreeStatement(
 			mkFree(conn->heapHandle, stm->statement.sqlserver.resultSet);
 			stm->statement.sqlserver.resultSet = NULL;
 		}
+	}
+	
+	if (stm->statement.sqlserver.bindVariables) {
+		for (SQLSMALLINT iCol = 0; iCol < stm->statement.sqlserver.ParameterCount; iCol++)
+		{
+			ODBC_BINDING* binding = &stm->statement.sqlserver.bindVariables[iCol];
+			if (binding->buffer) {
+				mkFree(conn->heapHandle, binding->buffer);
+				binding->buffer = NULL;
+			}	
+		}
+		mkFree(conn->heapHandle, stm->statement.sqlserver.bindVariables);
+		stm->statement.sqlserver.bindVariables = NULL;
 	}
 
 	TRYODBC(*stm->statement.sqlserver.hStmt,
@@ -566,6 +643,11 @@ sqlserverExecuteSelectStatement(
 
 	switch (RetCode)
 	{
+		case SQL_NEED_DATA:
+		{
+			fwprintf(stderr, L"Need more data\n");
+			break;
+		}
 		case SQL_SUCCESS_WITH_INFO:
 		{
 			_HandleDiagnosticRecord(*stm->statement.sqlserver.hStmt, SQL_HANDLE_STMT, RetCode);
@@ -694,7 +776,11 @@ sqlserverCreateConnection(
 	mbstowcs_s(NULL, wPassword, MAX_PATH, password, strnlen_s(password, MAX_PATH));
 
 	conn->connection_string = mkStrcatW(heapHandle, __FILE__, __LINE__,
-		L"Driver={SQL Server}; Server=", wHostName, L"\\", wInstanceName, L";Database=", wDatabaseName, L";User Id=", wUserName, L";Password=", wPassword, L";",
+		L"Driver={SQL Server};",
+		L"Server=", wHostName, L"\\", wInstanceName, 
+		L";Database=", wDatabaseName, 
+		L";User Id=", wUserName, 
+		L";Password=", wPassword, L";",
 		NULL);
 	
 	// Allocate an environment
