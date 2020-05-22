@@ -25,59 +25,59 @@ SQLHENV     hEnv = NULL;
                                 }  \
                             }
 
-/******************************************/
-/* Structure to store information about   */
-/* a column.
-/******************************************/
+
 
 void 
-SQLBindStringW(
+_SQLBindStringW(
 	DBInt_Connection * conn, 
 	DBInt_Statement* stm,
 	SQLUSMALLINT colIndex,
 	LPCWSTR szString
 )
 {
-	ODBC_BINDING * binding = &stm->statement.sqlserver.bindVariables[colIndex - 1];
+	if (stm->statement.sqlserver.ParameterCount > 0) {
 
-	if (binding->fCType == SQL_C_NUMERIC)
-	{
-		*((long*)binding->buffer) = _wtol(szString);
+		ODBC_BINDING * binding = &stm->statement.sqlserver.bindVariables[colIndex - 1];
+
+		if (binding->fCType == SQL_C_NUMERIC)
+		{
+			*((long*)binding->buffer) = _wtol(szString);
 		
-		TRYODBC(*stm->statement.sqlserver.hStmt,
-			SQL_HANDLE_STMT,
-			SQLBindParameter(
-				*stm->statement.sqlserver.hStmt, 
-				colIndex, 
-				SQL_PARAM_INPUT, 
-				SQL_C_SSHORT, 
-				SQL_INTEGER, 
-				0, 
-				0, 
-				binding->buffer, 
-				0, 
-				&binding->pcbValue));
-	}
-	else if (stm->statement.sqlserver.bindVariables[colIndex - 1].fCType == SQL_C_WCHAR) 
-	{
-		SQLULEN len = wcslen(szString);
-		size_t size = len * sizeof(WCHAR);
-		memcpy_s(binding->buffer, size, szString, size);
-		binding->pcbValue = SQL_NTS;
+			TRYODBC(*stm->statement.sqlserver.hStmt,
+				SQL_HANDLE_STMT,
+				SQLBindParameter(
+					*stm->statement.sqlserver.hStmt, 
+					colIndex, 
+					SQL_PARAM_INPUT, 
+					SQL_C_SSHORT, 
+					SQL_INTEGER, 
+					0, 
+					0, 
+					binding->buffer, 
+					0, 
+					&binding->pcbValue));
+		}
+		else if (stm->statement.sqlserver.bindVariables[colIndex - 1].fCType == SQL_C_WCHAR) 
+		{
+			SQLULEN len = wcslen(szString);
+			size_t size = len * sizeof(WCHAR);
+			memcpy_s(binding->buffer, size, szString, size);
+			binding->pcbValue = SQL_NTS;
 
-		TRYODBC(*stm->statement.sqlserver.hStmt,
-			SQL_HANDLE_STMT,
-			SQLBindParameter(
-				*stm->statement.sqlserver.hStmt, 
-				colIndex, 
-				SQL_PARAM_INPUT, 
-				SQL_C_WCHAR, 
-				SQL_WCHAR,
-				len + 2,
-				0, 
-				binding->buffer,
-				size + 22,
-				&binding->pcbValue));
+			TRYODBC(*stm->statement.sqlserver.hStmt,
+				SQL_HANDLE_STMT,
+				SQLBindParameter(
+					*stm->statement.sqlserver.hStmt, 
+					colIndex, 
+					SQL_PARAM_INPUT, 
+					SQL_C_WCHAR, 
+					SQL_WCHAR,
+					len,
+					0, 
+					binding->buffer,
+					size,
+					&binding->pcbValue));
+		}
 	}
 
 Exit:
@@ -101,7 +101,7 @@ sqlserverBindString(
 	mbstowcs_s(NULL, wValue, cCount+1, bindVariableValue, cCount);
 	wValue[cCount] = L'\0';
 
-	SQLBindStringW(conn, stm, colIndex, wValue);
+	_SQLBindStringW(conn, stm, colIndex, wValue);
 
 	mkFree(conn->heapHandle, wValue);
 }
@@ -124,7 +124,7 @@ sqlserverBindNumber(
 	mbstowcs_s(NULL, wValue, cCount + 1, bindVariableValue, cCount);
 	wValue[cCount] = L'\0';
 
-	SQLBindStringW(conn, stm, colIndex, wValue);
+	_SQLBindStringW(conn, stm, colIndex, wValue);
 
 	mkFree(conn->heapHandle, wValue);
 
@@ -145,6 +145,36 @@ sqlserverExecuteInsertStatement(
 	sqlserverExecuteSelectStatement(conn, stm, sql);
 	mkItoa(stm->statement.sqlserver.cRowCount, retval);
 	return retval;
+}
+
+SQLSERVER_INTERFACE_API
+void 
+sqlserverExecuteDeleteStatement(
+	DBInt_Connection * conn,
+	DBInt_Statement * stm, 
+	const char * sql
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+	//char * retval = mkMalloc(conn->heapHandle, 21, __FILE__, __LINE__);
+	sqlserverExecuteSelectStatement(conn, stm, sql);
+	//mkItoa(stm->statement.sqlserver.cRowCount, retval);
+}
+
+SQLSERVER_INTERFACE_API
+void
+sqlserverExecuteUpdateStatement(
+	DBInt_Connection* conn,
+	DBInt_Statement* stm,
+	const char* sql
+)
+{
+	conn->errText = NULL;
+	conn->err = FALSE;
+	//char * retval = mkMalloc(conn->heapHandle, 21, __FILE__, __LINE__);
+	sqlserverExecuteSelectStatement(conn, stm, sql);
+	//mkItoa(stm->statement.sqlserver.cRowCount, retval);
 }
 
 SQLSERVER_INTERFACE_API
@@ -507,6 +537,8 @@ _BindAllResultSetColumns(
 				0,
 				NULL,
 				&pThisBinding->rowDataCharacterCount));
+
+		pThisBinding->rowDataCharacterCount += sizeof(wchar_t);
 
 		// Figure out data type. All types can be found at
 		//	https://docs.microsoft.com/en-us/sql/odbc/reference/appendixes/sql-data-types?view=sql-server-ver15
@@ -1069,51 +1101,6 @@ SQLSERVER_INTERFACE_API void* sqlserverGetLob(DBInt_Connection* conn, DBInt_Stat
 	POSTCHECK(conn);
 }
 
-SQLSERVER_INTERFACE_API void sqlserverExecuteUpdateStatement(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
-	PRECHECK(conn);
-
-	PGresult* res = NULL;
-	conn->errText = NULL;
-
-	if (stm->statement.postgresql.bindVariableCount == 0) {
-		// "update" statement has no bind variables
-		res = PQexec(conn->connection.postgresqlHandle, sql);
-		if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-			conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-		}
-	}
-	else {
-		// "update" statement has bind variables
-		res = PQexecParams(conn->connection.postgresqlHandle,
-			sql,
-			stm->statement.postgresql.bindVariableCount,
-			stm->statement.postgresql.paramTypes,
-			(const char* const*)stm->statement.postgresql.bindVariables,
-			stm->statement.postgresql.paramSizes,
-			stm->statement.postgresql.paramFormats,
-			0);
-		if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-			conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-		}
-		else {
-			stm->statement.postgresql.currentRowNum = 0;
-			stm->statement.postgresql.resultSet = res;
-		}
-	}
-	PQclear(res);
-	stm->statement.postgresql.currentRowNum = 0;
-	stm->statement.postgresql.resultSet = NULL;
-
-	POSTCHECK(conn);
-}
-
-
-
-
-
-
-
-
 SQLSERVER_INTERFACE_API unsigned int sqlserverGetColumnSize(DBInt_Connection* conn, DBInt_Statement* stm, const char* columnName) {
 	PRECHECK(conn);
 
@@ -1144,21 +1131,6 @@ SQLSERVER_INTERFACE_API void sqlserverRegisterString(DBInt_Connection* conn, DBI
 	PRECHECK(conn);
 	conn->errText = NULL;
 }
-
-SQLSERVER_INTERFACE_API void sqlserverExecuteDeleteStatement(DBInt_Connection* conn, DBInt_Statement* stm, const char* sql) {
-	PRECHECK(conn);
-
-	conn->errText = NULL;
-	PGresult* res = PQexec(conn->connection.postgresqlHandle, sql);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-		conn->errText = PQerrorMessage(conn->connection.postgresqlHandle);
-	}
-	PQclear(res);
-	stm->statement.postgresql.resultSet = NULL;
-	stm->statement.postgresql.currentRowNum = 0;
-	POSTCHECK(conn);
-}
-
 
 
 SQLSERVER_INTERFACE_API unsigned int sqlserverGetAffectedRows(DBInt_Connection* conn, DBInt_Statement* stm) {
