@@ -45,7 +45,8 @@ _SQLBindStringW(
 	DBInt_Connection * conn, 
 	DBInt_Statement* stm,
 	SQLUSMALLINT colIndex,
-	LPCWSTR szString
+	LPCWSTR szString, 
+	SQLULEN strlen
 )
 {
 	if (stm->statement.sqlserver.ParameterCount > 0) {
@@ -72,8 +73,8 @@ _SQLBindStringW(
 		}
 		else if (stm->statement.sqlserver.bindVariables[colIndex - 1].fCType == SQL_C_WCHAR) 
 		{
-			SQLULEN len = wcslen(szString);
-			size_t size = len * sizeof(WCHAR);
+			//SQLULEN len = wcslen(szString);
+			size_t size = strlen * sizeof(WCHAR);
 			memcpy_s(binding->buffer, size, szString, size);
 			binding->pcbValue = SQL_NTS;
 
@@ -85,7 +86,64 @@ _SQLBindStringW(
 					SQL_PARAM_INPUT, 
 					SQL_C_WCHAR, 
 					SQL_WCHAR,
-					len,
+					strlen,
+					0, 
+					binding->buffer,
+					size,
+					&binding->pcbValue));
+		}
+	}
+
+Exit:
+	return;
+}
+
+void 
+_SQLBindStringA(
+	DBInt_Connection * conn, 
+	DBInt_Statement* stm,
+	SQLUSMALLINT colIndex,
+	LPCSTR szString,
+	SQLULEN strlen
+)
+{
+	if (stm->statement.sqlserver.ParameterCount > 0) {
+
+		ODBC_BINDING * binding = &stm->statement.sqlserver.bindVariables[colIndex - 1];
+
+		if (binding->fCType == SQL_C_NUMERIC)
+		{
+			*((long*)binding->buffer) = atol(szString);
+		
+			TRYODBC(*stm->statement.sqlserver.hStmt,
+				SQL_HANDLE_STMT,
+				SQLBindParameter(
+					*stm->statement.sqlserver.hStmt, 
+					colIndex, 
+					SQL_PARAM_INPUT, 
+					SQL_C_SSHORT, 
+					SQL_INTEGER, 
+					0, 
+					0, 
+					binding->buffer, 
+					0, 
+					&binding->pcbValue));
+		}
+		else if (stm->statement.sqlserver.bindVariables[colIndex - 1].fCType == SQL_C_WCHAR) 
+		{
+			size_t size = strlen * sizeof(WCHAR);
+			memcpy_s(binding->buffer, size, szString, size);
+			binding->pcbValue = SQL_NTS;
+
+			TRYODBC(*stm->statement.sqlserver.hStmt,
+				SQL_HANDLE_STMT,
+				SQLBindParameter(
+					*stm->statement.sqlserver.hStmt, 
+					colIndex, 
+					SQL_PARAM_INPUT, 
+					SQL_C_WCHAR, 
+					SQL_WCHAR,
+					strlen,
 					0, 
 					binding->buffer,
 					size,
@@ -109,14 +167,8 @@ sqlserverBindString(
 {
 	SQLUSMALLINT	colIndex = atoi(bindVariableName);
 
-	size_t cCount = valueLength;
-	wchar_t *wValue = mkMalloc(conn->heapHandle, (cCount + 1) * sizeof(wchar_t), __FILE__, __LINE__);
-	mbstowcs_s(NULL, wValue, cCount+1, bindVariableValue, cCount);
-	wValue[cCount] = L'\0';
+	_SQLBindStringA(conn, stm, colIndex, bindVariableValue, valueLength);
 
-	_SQLBindStringW(conn, stm, colIndex, wValue);
-
-	mkFree(conn->heapHandle, wValue);
 }
 
 
@@ -137,7 +189,7 @@ sqlserverBindNumber(
 	mbstowcs_s(NULL, wValue, cCount + 1, bindVariableValue, cCount);
 	wValue[cCount] = L'\0';
 
-	_SQLBindStringW(conn, stm, colIndex, wValue);
+	_SQLBindStringW(conn, stm, colIndex, wValue, valueLength);
 
 	mkFree(conn->heapHandle, wValue);
 

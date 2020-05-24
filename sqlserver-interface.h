@@ -23,7 +23,8 @@
 void			_HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
 void			_BindAllResultSetColumns(DBInt_Connection* conn, DBInt_Statement* stm);
 int				_GetColumnIndexByColumnName(DBInt_Connection * conn, DBInt_Statement * stm, const char* columnName);
-void			_SQLBindStringW(DBInt_Connection* conn, DBInt_Statement* stm, SQLUSMALLINT colIndex, LPCWSTR szString);
+void			_SQLBindStringW(DBInt_Connection* conn, DBInt_Statement* stm, SQLUSMALLINT colIndex, LPCWSTR szString, SQLULEN strlen);
+void			_SQLBindStringA(DBInt_Connection* conn, DBInt_Statement* stm, SQLUSMALLINT colIndex, LPCSTR szString, SQLULEN strlen);
 
 /* DDL's PUBLIC FUNCTIONS  */
 SQLSERVER_INTERFACE_API void					sqlserverInitConnection(DBInt_Connection* conn);
