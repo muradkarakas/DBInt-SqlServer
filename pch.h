@@ -1,8 +1,17 @@
-// pch.h: This is a precompiled header file.
-// Files listed below are compiled only once, improving build performance for future builds.
-// This also affects IntelliSense performance, including code completion and many code browsing features.
-// However, files listed here are ALL re-compiled if any one of them is updated between builds.
-// Do not add files here that you will be updating frequently as this negates the performance advantage.
+/**
+ * This file is part of Sodium Language project
+ *
+ * Copyright © 2020 Murad Karakaþ <muradkarakas@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License v3.0
+ * as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ *	https://choosealicense.com/licenses/gpl-3.0/
+ */
+
+
 
 #ifndef PCH_H
 #define PCH_H
